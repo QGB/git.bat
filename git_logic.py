@@ -113,6 +113,32 @@ def get_origin_url(git_bin: str) -> str:
         pass
     return ""
 
+def get_branch_tracking_url(git_bin: str, branch: str) -> str:
+    """
+    尝试从当前分支的 tracking 配置中获取远程地址。
+    支持标准远程名称（如 origin）以及直接写在 branch.remote 中的 URL。
+    """
+    try:
+        remote_name = subprocess.run(
+            [git_bin, "config", "--get", f"branch.{branch}.remote"],
+            capture_output=True, text=True
+        ).stdout.strip()
+        if not remote_name:
+            return ""
+        # 先尝试通过 git remote get-url 获取（正常远程别名）
+        url_res = subprocess.run(
+            [git_bin, "remote", "get-url", remote_name],
+            capture_output=True, text=True
+        )
+        if url_res.returncode == 0 and url_res.stdout.strip():
+            return url_res.stdout.strip()
+        # 如果失败，检查 remote_name 本身是否为合法 Git URL
+        if looks_like_url(remote_name):
+            return remote_name
+    except Exception:
+        pass
+    return ""
+
 def run_shell(git_bin: str, args: list[str], realtime: bool = False) -> subprocess.CompletedProcess:
     """执行命令（自动补全 PortableGit 环境）"""
     cmd = [git_bin] + args
@@ -207,8 +233,17 @@ def init_lfs(git_bin: str) -> bool:
     return True
 
 def set_remote(git_bin: str, remote_url: str):
-    if remote_url:
+    """安全设置 origin 远程地址，若不存在则添加"""
+    if not remote_url:
+        return
+    check = subprocess.run([git_bin, "remote", "get-url", "origin"],
+                           capture_output=True, text=True)
+    if check.returncode == 0:
+        print("[INFO] 更新远程 origin 地址...")
         run_shell(git_bin, ["remote", "set-url", "origin", remote_url])
+    else:
+        print("[INFO] 添加远程 origin 地址...")
+        run_shell(git_bin, ["remote", "add", "origin", remote_url])
 
 def scan_large_files(repo_root: Path, threshold: int) -> set[str]:
     large_files = set()
@@ -260,16 +295,36 @@ def git_pull(git_bin: str, branch: str, extra_args: list[str], remote_url: str =
     print("\n===== 执行 git lfs pull =====")
     run_shell(git_bin, ["lfs", "pull"], realtime=True)
 
+def extract_remote_user_from_url(remote_url: str) -> str | None:
+    """从 Git 远程 URL 中提取目标用户/组织名，兼容 HTTPS 和 SSH SCP 格式"""
+    if not remote_url:
+        return None
+    parsed = urlparse(remote_url)
+    if parsed.scheme and parsed.netloc:
+        username = parsed.username
+        if username:
+            return username
+        path_parts = [p for p in parsed.path.strip("/").split("/") if p]
+        if path_parts:
+            return path_parts[0]
+    if remote_url.startswith("git@"):
+        parts = remote_url.split("@", 1)
+        if len(parts) == 2:
+            host_path = parts[1]
+            if ":" in host_path:
+                _, path = host_path.split(":", 1)
+                path_parts = [p for p in path.strip("/").split("/") if p]
+                if path_parts:
+                    return path_parts[0]
+    path = parsed.path if parsed.path else remote_url
+    path_parts = [p for p in path.strip("/").split("/") if p]
+    return path_parts[0] if path_parts else None
+
 def apply_git_user_config(git_bin: str, remote_url: str, user_arg: str):
     """处理 Git 用户名和邮箱配置"""
     if not remote_url:
         return
-    parsed = urlparse(remote_url)
-    remote_user = parsed.username
-    if not remote_user:
-        path_parts = [p for p in parsed.path.strip("/").split("/") if p]
-        if path_parts:
-            remote_user = path_parts[0]
+    remote_user = extract_remote_user_from_url(remote_url)
     if user_arg is not None:
         if user_arg == "AUTO":
             target_user = remote_user
@@ -456,9 +511,11 @@ def main():
     args, extra = parser.parse_known_args()
     git_exe = find_git(args.git)
     repo_root = Path.cwd()
-    remote_url = args.remote or get_origin_url(git_exe)
+    # 优先级：命令行传入 > origin 配置 > 当前分支 tracking 远程（含直接 URL）
+    remote_url = args.remote or get_origin_url(git_exe) or get_branch_tracking_url(git_exe, args.branch)
     if not remote_url and args.mode not in ("list-big", "listbig", "remove-big", "filter-repo"):
-        print("[FATAL] 必须提供远程仓库地址（直接传 URL 或通过 --remote）")
+        print("[FATAL] 未提供远程仓库地址，且未找到 origin 或当前分支的 tracking 远程配置。")
+        print("       请通过参数传递 URL，或先配置远程仓库：git remote add origin <url>")
         sys.exit(1)
     if args.threshold > 0:
         threshold_bytes = args.threshold
@@ -501,7 +558,7 @@ def main():
                 print("[FATAL] Git LFS 安装后仍然不可用，请检查环境。")
                 sys.exit(1)
             lfs_available = True
-        # 只有钩子尚未初始化时才执行 git lfs install，避免重复输出
+        # 避免重复执行 git lfs install
         if lfs_needed or lfs_available:
             if is_lfs_initialized(repo_root):
                 print("[INFO] Git LFS hooks 已初始化，跳过 git lfs install")
