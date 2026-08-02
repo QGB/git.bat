@@ -483,6 +483,8 @@ def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
         logger.info("暂存区为空（可能没有新增或修改）")
         
     cmd_args = ["push", "-v", "--progress"] + extra_args + [remote_url, branch]
+    # 在 git_push 函数中，推送循环部分修改如下：
+
     for attempt in range(1, retry_count + 1):
         logger.info(f"===== 推送 {remote_url} {branch} (尝试 {attempt}/{retry_count}) 间隔 {retry_seconds}s =====")
         try:
@@ -491,17 +493,45 @@ def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
                 if 'EmptyAfterPush' in globals() and globals()['EmptyAfterPush']:
                     with open(repo_root/'ReadMe.md','wb') as f:
                         f.write(b'')
+                    logger.info(f"{b_ReadMe} #EmptyAfterPush ReadMe.md 成功！ {stime()}")
                 logger.info(f"✅ 推送成功！ {stime()}")
                 break
             else:
-                logger.warning(f"⚠️ 网络连接或推送失败 (返回码: {push_res.returncode})")
+                # 判断是否为网络错误
+                error_output = (push_res.stderr or "") + (push_res.stdout or "")
+                is_network_error = any(keyword in error_output for keyword in [
+                    "Could not read from remote repository",
+                    "ssh: connect to host",
+                    "Connection timed out",
+                    "The remote end hung up unexpectedly",
+                    "fatal: unable to access",
+                    "Failed to connect to",
+                    "Network is unreachable",
+                    "remote: fatal:",
+                    "HTTP 401",   # 401 是认证失败，通常不是临时网络问题，但有时 token 过期也算
+                    "HTTP 403",   # 403 权限不足，不应重试
+                    "HTTP 500",   # 服务器内部错误，可能临时，也可能不是
+                    # 更精确地，只有网络超时、连接重置等才重试，401/403 不重试
+                ])
+                # 排除认证/权限错误（401/403）不重试
+                if any(keyword in error_output for keyword in ["HTTP 401", "HTTP 403", "fatal: Authentication failed", "Permission denied (publickey)"]):
+                    is_network_error = False  # 这类错误不应重试
+                    
+                if is_network_error:
+                    logger.warning(f"⚠️ 网络错误，稍后重试 (返回码: {push_res.returncode})")
+                else:
+                    logger.error(f"❌ 推送失败，非网络错误，退出。返回码: {push_res.returncode}")
+                    sys.exit(1)
+                    
         except Exception as e:
-            logger.warning(f"⚠️ 推送进程发生异常: {repr(e)}")
-            
+            # 异常可能也是网络问题，但无法确定，按网络错误处理并重试
+            logger.warning(f"⚠️ 推送进程发生异常: {repr(e)}，可能为网络问题，重试")
+            # 但仍需检查是否为底层异常如权限拒绝？通常异常多为超时等，暂且重试
+        
         if attempt < retry_count:
             time.sleep(retry_seconds)
         else:
-            logger.error(f"❌ 已达到最大重试次数 {retry_count}，终止操作。请检查网络。")
+            logger.error(f"❌ 已达到最大重试次数 {retry_count}，网络持续失败，终止操作。")
             sys.exit(1)
 
 def git_list_big(git_bin: str, threshold_bytes: int) -> list[tuple[int, str, str]]:
