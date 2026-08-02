@@ -8,3 +8,5 @@ time.time() 尾数补齐隐患：原代码 sf.split('.')[1][:3] 在时间戳恰�
 僵尸进程问题：原代码的 kill_process_tree 只兼容了 Windows。现已补充跨平台进程清理机制。
 冗余语法错误：修复了 run_shell(..., ["diff", "--cached", "--quiet"],) 中多余的逗号。
 标准输出流 / 错误流混乱：Git 很多正常提示会输出到 stderr。现已优化：仅在返回码非 0 时将 stderr 标为 ERROR，正常执行的 stderr 作为 DEBUG 输出。
+
+globals()['EmptyAfterPush']

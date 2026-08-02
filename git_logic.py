@@ -463,13 +463,20 @@ def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
     if result.returncode == 0 and result.stdout.strip():
         files = result.stdout.strip().split("\n")
         logger.info(f"本次涉及变更的文件列表 (共 {len(files)} 个):")
-        # for f in files[:10]:
-            # logger.info(f"  {f}")
         if len(files) > 10:
             logger.info(f"  ... 以及其他 {len(files) - 10} 个文件")
         else:    
             logger.info(f"  {files}")
             
+        for f in files:
+            if ('M  ReadMe.md' in f) or ('A  ReadMe.md' in f):
+                b_ReadMe=''
+                with open(repo_root/'ReadMe.md','rb') as f:
+                    b_ReadMe=f.read(-1)
+                if b'#EmptyAfterPush' in b_ReadMe:
+                    globals()['EmptyAfterPush']=True
+                    # print(stime(),'EmptyAfterPush',b_ReadMe[-99:])
+            # logger.info(f"  {f}")
             
         run_shell(git_bin, ["commit", "-m", commit_msg])    
     else:
@@ -481,6 +488,9 @@ def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
         try:
             push_res = run_shell(git_bin, cmd_args, realtime=True)
             if push_res.returncode == 0:
+                if 'EmptyAfterPush' in globals() and globals()['EmptyAfterPush']:
+                    with open(repo_root/'ReadMe.md','wb') as f:
+                        f.write(b'')
                 logger.info(f"✅ 推送成功！ {stime()}")
                 break
             else:
