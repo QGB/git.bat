@@ -463,20 +463,17 @@ def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
     if result.returncode == 0 and result.stdout.strip():
         files = result.stdout.strip().split("\n")
         logger.info(f"本次涉及变更的文件列表 (共 {len(files)} 个):")
-        for f in files[:10]:
-            logger.info(f"  {f}")
+        # for f in files[:10]:
+            # logger.info(f"  {f}")
         if len(files) > 10:
             logger.info(f"  ... 以及其他 {len(files) - 10} 个文件")
+        else:    
+            logger.info(f"  {files}")
+            
+            
+        run_shell(git_bin, ["commit", "-m", commit_msg])    
     else:
         logger.info("暂存区为空（可能没有新增或修改）")
-        
-    res_diff = subprocess.run([git_bin, "diff", "--cached", "--name-only"], capture_output=True, text=True)
-    changed_files = [f for f in res_diff.stdout.strip().split('\n') if f]
-    if changed_files:
-        print('有改变', changed_files)
-        run_shell(git_bin, ["commit", "-m", commit_msg])
-    else:
-        logger.info("无变更，跳过 commit，直接尝试推送")
         
     cmd_args = ["push", "-v", "--progress"] + extra_args + [remote_url, branch]
     for attempt in range(1, retry_count + 1):
