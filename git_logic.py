@@ -3,15 +3,14 @@ from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
 def stime():
-    ft=time.time()
-    sf=str(ft)
-    tail=sf.split('.')[1][:3]
-    while len(tail)<3:
-        tail='0'+tail
-    return time.strftime('%Y-%m-%d__%H.%M.%S',time.localtime(ft))+'__.'+tail
+    ft = time.time()
+    sf = str(ft)
+    tail = sf.split('.')[1][:3]
+    while len(tail) < 3:
+        tail = '0' + tail
+    return time.strftime('%Y-%m-%d__%H.%M.%S', time.localtime(ft)) + '__.' + tail
 
 def kill_process_tree(pid: int):
-    """Windows 下递归杀死进程树"""
     if sys.platform == "win32":
         try:
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
@@ -20,11 +19,9 @@ def kill_process_tree(pid: int):
             pass
 
 def looks_like_url(s: str) -> bool:
-    """判断是否为 Git 远程地址"""
     return s.startswith("https://") or s.startswith("git@") or "://" in s
 
 def parse_url_info(url: str):
-    """从 URL 中提取 remote_url、auth、repo 路径"""
     parsed = urlparse(url)
     auth = None
     if "@" in parsed.netloc:
@@ -36,7 +33,6 @@ def parse_url_info(url: str):
     return remote_url, auth, repo_path
 
 def parse_size_str(val: str) -> int:
-    """解析如 100mb, 50m, 1g, 104857600 等字符串为字节数，默认 100MB"""
     if not val:
         return 104857600
     s = str(val).strip().lower()
@@ -59,39 +55,90 @@ def parse_size_str(val: str) -> int:
 
 def preprocess_args():
     """
-    预处理参数，自动识别任意位置的远程 URL，确保模式参数有效。
+    通用参数预处理，支持任意顺序：
+      - 识别独立的 URL 并转换为 --remote <URL>
+      - 处理 -u/--user：
+          * 若后跟 URL，则转为 --user（无参，触发 AUTO）和 --remote <URL>
+          * 若后跟显式用户名，则保留 -u <用户名>
+          * 否则保留 -u（无参）
+      - 自动补全缺失的 mode（默认 push）
     """
     valid_modes = {"push", "pull", "init", "list-big", "listbig", "remove-big", "filter-repo"}
-    args = sys.argv[1:]
-    url_index = -1
-    remote_url = None
-    auth = None
-    # 查找第一个远程地址
-    for i, arg in enumerate(args):
+    raw = sys.argv[1:]
+
+    # 1. 收集所有 URL 的位置和值
+    url_indices = []
+    url_values = []
+    for i, arg in enumerate(raw):
         if looks_like_url(arg):
-            remote_url, auth, _ = parse_url_info(arg)
-            url_index = i
-            break
-    if url_index == -1:
-        return sys.argv   # 无 URL，不做处理
-    # 移除 URL
-    args.pop(url_index)
-    # 构建新的参数列表
-    new_argv = [sys.argv[0]]
-    new_argv.append("--remote")
-    new_argv.append(remote_url)
-    if auth:
-        new_argv.append("--auth")
-        new_argv.append(auth)
-    # 确保存在模式参数
-    has_mode = any(arg in valid_modes for arg in args)
+            url_indices.append(i)
+            url_values.append(arg)
+
+    # 2. 构建新参数列表
+    new = []
+    i = 0
+    while i < len(raw):
+        arg = raw[i]
+
+        # 处理 -u / --user
+        if arg in ("-u", "--user"):
+            # 检查下一个参数是否是 URL（在 url_indices 中）
+            if i + 1 < len(raw) and (i + 1) in url_indices:
+                # 情况：-u <URL>
+                new.append("--user")          # 无参数，触发 const="AUTO"
+                new.append("--remote")
+                new.append(raw[i + 1])
+                i += 2
+                continue
+            else:
+                # -u 后不是 URL
+                # 检查下一个参数是否应作为用户名
+                if i + 1 < len(raw):
+                    nxt = raw[i + 1]
+                    # 如果下一个参数是 mode 或以 '-' 开头，则 -u 不带参数
+                    if nxt in valid_modes or nxt.startswith("-"):
+                        # -u 不带参数
+                        new.append(arg)
+                        i += 1
+                        continue
+                    else:
+                        # 否则视为用户名
+                        new.append(arg)
+                        new.append(nxt)
+                        i += 2
+                        continue
+                else:
+                    # -u 是最后一个参数，不带参数
+                    new.append(arg)
+                    i += 1
+                    continue
+
+        # 处理独立的 URL（不在 -u 之后）
+        if looks_like_url(arg):
+            # 检查这个 URL 是否是被 -u 处理后跳过的那个（即它的前一个参数是 -u）
+            # 因为我们在上面遇到 -u 时已经跳过了 URL，所以这里不会重复添加
+            # 但为了安全，检查前一个参数是否为 -u 或 --user（在原始列表中）
+            if i > 0 and raw[i - 1] in ("-u", "--user"):
+                # 这个 URL 已经在 -u 分支处理过了，跳过
+                i += 1
+                continue
+            new.append("--remote")
+            new.append(arg)
+            i += 1
+            continue
+
+        # 其他参数原样保留
+        new.append(arg)
+        i += 1
+
+    # 3. 确保存在 mode
+    has_mode = any(a in valid_modes for a in new)
     if not has_mode:
-        args.append("push")   # 默认推送
-    new_argv.extend(args)
-    return new_argv
+        new.append("push")
+
+    return [sys.argv[0]] + new
 
 def find_git(user_git: str) -> str:
-    """查找 git 可执行文件"""
     if user_git and Path(user_git).is_file():
         return user_git
     env_git = os.environ.get("GIT_PATH", "")
@@ -104,7 +151,6 @@ def find_git(user_git: str) -> str:
     sys.exit(1)
 
 def get_origin_url(git_bin: str) -> str:
-    """尝试获取当前仓库配置的 origin 地址"""
     try:
         res = subprocess.run([git_bin, "remote", "get-url", "origin"], capture_output=True, text=True)
         if res.returncode == 0 and res.stdout.strip():
@@ -114,10 +160,6 @@ def get_origin_url(git_bin: str) -> str:
     return ""
 
 def get_branch_tracking_url(git_bin: str, branch: str) -> str:
-    """
-    尝试从当前分支的 tracking 配置中获取远程地址。
-    支持标准远程名称（如 origin）以及直接写在 branch.remote 中的 URL。
-    """
     try:
         remote_name = subprocess.run(
             [git_bin, "config", "--get", f"branch.{branch}.remote"],
@@ -125,14 +167,12 @@ def get_branch_tracking_url(git_bin: str, branch: str) -> str:
         ).stdout.strip()
         if not remote_name:
             return ""
-        # 先尝试通过 git remote get-url 获取（正常远程别名）
         url_res = subprocess.run(
             [git_bin, "remote", "get-url", remote_name],
             capture_output=True, text=True
         )
         if url_res.returncode == 0 and url_res.stdout.strip():
             return url_res.stdout.strip()
-        # 如果失败，检查 remote_name 本身是否为合法 Git URL
         if looks_like_url(remote_name):
             return remote_name
     except Exception:
@@ -140,7 +180,6 @@ def get_branch_tracking_url(git_bin: str, branch: str) -> str:
     return ""
 
 def run_shell(git_bin: str, args: list[str], realtime: bool = False) -> subprocess.CompletedProcess:
-    """执行命令（自动补全 PortableGit 环境）"""
     cmd = [git_bin] + args
     git_exe_path = Path(git_bin).resolve()
     git_bin_dir = git_exe_path.parent
@@ -187,7 +226,6 @@ def check_lfs_available(git_bin: str) -> bool:
     return res.returncode == 0
 
 def is_lfs_initialized(repo_root: Path) -> bool:
-    """检查仓库是否已经执行过 git lfs install（钩子已就位）"""
     hook_path = repo_root / ".git" / "hooks" / "pre-push"
     if hook_path.exists():
         try:
@@ -233,7 +271,6 @@ def init_lfs(git_bin: str) -> bool:
     return True
 
 def set_remote(git_bin: str, remote_url: str):
-    """安全设置 origin 远程地址，若不存在则添加"""
     if not remote_url:
         return
     check = subprocess.run([git_bin, "remote", "get-url", "origin"],
@@ -296,7 +333,6 @@ def git_pull(git_bin: str, branch: str, extra_args: list[str], remote_url: str =
     run_shell(git_bin, ["lfs", "pull"], realtime=True)
 
 def extract_remote_user_from_url(remote_url: str) -> str | None:
-    """从 Git 远程 URL 中提取目标用户/组织名，兼容 HTTPS 和 SSH SCP 格式"""
     if not remote_url:
         return None
     parsed = urlparse(remote_url)
@@ -321,7 +357,6 @@ def extract_remote_user_from_url(remote_url: str) -> str | None:
     return path_parts[0] if path_parts else None
 
 def apply_git_user_config(git_bin: str, remote_url: str, user_arg: str):
-    """处理 Git 用户名和邮箱配置"""
     if not remote_url:
         return
     remote_user = extract_remote_user_from_url(remote_url)
@@ -373,10 +408,10 @@ def apply_git_user_config(git_bin: str, remote_url: str, user_arg: str):
 
 def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
              commit_msg: str = "", remote_url: str = "",
-             user_arg: str = None, retry_count: int = 10,retry_seconds=5):
+             user_arg: str = None, retry_count: int = 10, retry_seconds=5):
     if not commit_msg:
-        commit_msg=f'{__file__[-20:]} auto {stime()}'
-             
+        commit_msg = f'{__file__[-20:]} auto {stime()}'
+
     print(f"\n[INFO] 当前工作目录: {repo_root.resolve()}")
     if not (repo_root / ".git").exists():
         print("\n[INFO] 检测到当前目录尚未初始化 Git 仓库，自动执行 git init...")
@@ -494,33 +529,37 @@ def git_remove_big(git_bin: str, threshold_bytes: int, target_hashes: list[str] 
 
 def main():
     sys.argv = preprocess_args()
+
     default_git = os.environ.get("GIT_PATH", "git")
     default_branch = os.environ.get("BRANCH", "master")
     parser = argparse.ArgumentParser(description="Git Auto LFS Tool")
     parser.add_argument("--git", default=default_git, help="git 可执行文件路径")
-    parser.add_argument("--branch",'-b', default=default_branch, help="分支名称")
-    parser.add_argument("--size",'-s', default="100mb", help="大文件大小限制（默认 100mb）")
+    parser.add_argument("--branch", '-b', default=default_branch, help="分支名称")
+    parser.add_argument("--size", '-s', default="100mb", help="大文件大小限制（默认 100mb）")
     parser.add_argument("--threshold", type=int, default=0, help="（兼容项）字节数阈值")
     parser.add_argument("--hashes", "--hash", default="", help="手动要清理的 Blob Hash（多个用逗号隔开）")
     parser.add_argument("--remote", default="", help="完整远程 URL")
-    parser.add_argument("--auth", help="认证信息 user:token")
-    parser.add_argument("--commit-msg","--commit_msg",'-m', default="", help="自定义 commit 消息")
+    parser.add_argument("--auth", help="认证信息 user:token（已废弃，认证信息已包含在 remote 中）")
+    parser.add_argument("--commit-msg", "--commit_msg", '-m', default="", help="自定义 commit 消息")
     parser.add_argument("--user", "-u", nargs="?", const="AUTO", default=None, help="自动配置 Git 用户")
     parser.add_argument("--retry", "-r", type=int, default=10, help="网络断开或 Push 失败时的重试次数 (默认 10)")
     parser.add_argument("mode", choices=["push", "pull", "init", "list-big", "listbig", "remove-big", "filter-repo"], help="操作模式")
     args, extra = parser.parse_known_args()
+
     git_exe = find_git(args.git)
     repo_root = Path.cwd()
-    # 优先级：命令行传入 > origin 配置 > 当前分支 tracking 远程（含直接 URL）
+
     remote_url = args.remote or get_origin_url(git_exe) or get_branch_tracking_url(git_exe, args.branch)
     if not remote_url and args.mode not in ("list-big", "listbig", "remove-big", "filter-repo"):
         print("[FATAL] 未提供远程仓库地址，且未找到 origin 或当前分支的 tracking 远程配置。")
         print("       请通过参数传递 URL，或先配置远程仓库：git remote add origin <url>")
         sys.exit(1)
+
     if args.threshold > 0:
         threshold_bytes = args.threshold
     else:
         threshold_bytes = parse_size_str(args.size)
+
     print(f"仓库路径: {repo_root.absolute()}")
     print(f"Git程序: {git_exe}")
     if args.mode != "init":
@@ -528,6 +567,7 @@ def main():
     if remote_url:
         print(f"远程地址: {remote_url}")
     print(f"分支: {args.branch}")
+
     try:
         if args.mode == "init":
             print("\n===== 执行 git init =====")
@@ -536,9 +576,11 @@ def main():
             run_shell(git_exe, ["remote", "add", "origin", remote_url])
             print("\n✅ 初始化完成！")
             return
+
         if args.mode in ("list-big", "listbig"):
             git_list_big(git_exe, threshold_bytes)
             return
+
         if args.mode in ("remove-big", "filter-repo"):
             target_hashes = [h.strip() for h in args.hashes.split(",") if h.strip()] if args.hashes else None
             git_remove_big(git_exe, threshold_bytes, target_hashes=target_hashes)
@@ -546,6 +588,7 @@ def main():
                 set_remote(git_exe, remote_url)
                 print("\n✅ 远程地址已重新绑定。")
             return
+
         large_files = scan_large_files(repo_root, threshold_bytes)
         has_large = len(large_files) > 0
         print(f"\n[INFO] 扫描到 {len(large_files)} 个本地超过阈值的文件")
@@ -558,7 +601,6 @@ def main():
                 print("[FATAL] Git LFS 安装后仍然不可用，请检查环境。")
                 sys.exit(1)
             lfs_available = True
-        # 避免重复执行 git lfs install
         if lfs_needed or lfs_available:
             if is_lfs_initialized(repo_root):
                 print("[INFO] Git LFS hooks 已初始化，跳过 git lfs install")
@@ -569,10 +611,12 @@ def main():
             clean_and_apply_lfs(git_exe, repo_root, large_files)
         if remote_url:
             set_remote(git_exe, remote_url)
+
         if args.mode == "pull":
             git_pull(git_exe, args.branch, extra, remote_url)
         elif args.mode == "push":
             git_push(git_exe, args.branch, repo_root, extra, args.commit_msg, remote_url, args.user, args.retry)
+
         print("\n✅ 操作结束！")
     except KeyboardInterrupt:
         print("\n[CANCEL] 用户手动终止程序。")
