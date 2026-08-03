@@ -1,3 +1,3 @@
-"%~dp0git.bat" push %*
+cmd /k "%~dp0git.bat" push git@github.com:QGB/git.bat.git %*
 
-pause
+REM pause
