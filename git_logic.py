@@ -79,7 +79,7 @@ def parse_url_info(url: str):
 
 def parse_size_str(val: str) -> int:
     if not val:
-        return 104857600
+        return 104857600 # 100 MB
     s = str(val).strip().lower()
     multiplier = 1
     if s.endswith("gb") or s.endswith("g"):
@@ -197,6 +197,7 @@ def get_branch_tracking_url(git_bin: str, branch: str) -> str:
         pass
     return ""
 
+
 def run_shell(git_bin: str, args: list[str], realtime: bool = False) -> subprocess.CompletedProcess:
     cmd = [git_bin] + args
     git_exe_path = Path(git_bin).resolve()
@@ -210,6 +211,11 @@ def run_shell(git_bin: str, args: list[str], realtime: bool = False) -> subproce
     ]
     env = os.environ.copy()
     env["NoDefaultCurrentDirectoryInExePath"] = "1"
+    
+    # 【核心修复 1】设置 Git 和 Python 的环境变量，强行禁用 C-stdio 缓冲区
+    env["GIT_FLUSH"] = "1"
+    env["PYTHONUNBUFFERED"] = "1"
+
     valid_paths = [p for p in portable_paths if os.path.exists(p)]
     env["PATH"] = os.pathsep.join(valid_paths) + os.pathsep + env.get("PATH", "")
     
@@ -217,26 +223,48 @@ def run_shell(git_bin: str, args: list[str], realtime: bool = False) -> subproce
     proc = None
     try:
         if realtime:
-            proc = subprocess.Popen(cmd, env=env)
-            retcode = proc.wait()
-            return subprocess.CompletedProcess(cmd, retcode)
-        else:
-            proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                    text=True, encoding="utf-8")
-            stdout, stderr = proc.communicate()
+            # 实时模式：合并 stderr 到 stdout
+            proc = subprocess.Popen(
+                cmd,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",  # 避免编码非法字符导致中断
+                bufsize=1
+            )
+            output_chunks = []
             
+            # 【核心修复 2】改用 read(1) 逐字符读取，精准捕获 '\r' 进度刷新
+            for char in iter(lambda: proc.stdout.read(1), ''):
+                sys.stdout.write(char)
+                sys.stdout.flush()
+                output_chunks.append(char)
+                
+            retcode = proc.wait()
+            combined_output = ''.join(output_chunks)
+            return subprocess.CompletedProcess(cmd, retcode, stdout=combined_output, stderr='')
+        else:
+            proc = subprocess.Popen(
+                cmd,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace"
+            )
+            stdout, stderr = proc.communicate()
             if stdout and stdout.strip():
                 logger.debug(f"[STDOUT]\n{stdout.strip()}")
             if stderr and stderr.strip():
-                # 很多时候 Git 正常信息也会走向 stderr，因此根据 returncode 区分级别
                 if proc.returncode == 0:
                     logger.debug(f"[STDERR]\n{stderr.strip()}")
                 else:
                     logger.error(f"[STDERR]\n{stderr.strip()}")
-            
             if proc.returncode != 0:
                 logger.warning(f"命令执行非 0 返回码: {proc.returncode}")
-                
             return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
     except KeyboardInterrupt:
         logger.warning("\n[CANCEL] 收到中断信号，正在清理 Git 进程树...")
@@ -246,7 +274,7 @@ def run_shell(git_bin: str, args: list[str], realtime: bool = False) -> subproce
         sys.exit(130)
     except Exception as e:
         logger.critical(f"执行异常: {repr(e)}")
-        raise
+        raise   
 
 def check_lfs_available(git_bin: str) -> bool:
     res = run_shell(git_bin, ["lfs", "version"], realtime=False)
@@ -446,8 +474,29 @@ def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
              commit_msg: str = "", remote_url: str = "",
              user_arg: str = None, retry_count: int = 10, retry_seconds=5):
     
+    # --- 自动生成 commit 消息：加入最大文件名 ---
     if not commit_msg:
-        commit_msg = f'{__file__[-20:]} auto {stime()}'
+        # 快速查找最大文件（排除 .git 目录）
+        max_file = None
+        max_size = -1
+        skip_dirs = {".git", "build", "dist", "__pycache__"}
+        for path in repo_root.rglob("*"):
+            if any(part in skip_dirs for part in path.parts):
+                continue
+            if not path.is_file():
+                continue
+            try:
+                fsize = path.stat().st_size
+            except OSError:
+                continue
+            if fsize > max_size:
+                max_size = fsize
+                max_file = str(path.relative_to(repo_root)).replace("\\", "/")
+        if max_file:
+            commit_msg = f'auto update [max: {max_file} ({max_size} bytes)] {stime()}'
+        else:
+            commit_msg = f'auto update {stime()}'
+    # 如果用户自定义了 commit_msg，则保留原样。
 
     logger.info(f"当前工作目录: {repo_root.resolve()}")
     if not (repo_root / ".git").exists():
@@ -457,8 +506,14 @@ def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
             run_shell(git_bin, ["remote", "add", "origin", remote_url])
             
     apply_git_user_config(git_bin, remote_url, user_arg)
-    run_shell(git_bin, ["add", "-A"])
     
+    # --- 执行 add 并检查返回码 ---
+    add_res = run_shell(git_bin, ["add", "-A"])
+    if add_res.returncode != 0:
+        logger.error(f"git add 失败，返回码: {add_res.returncode}")
+        sys.exit(1)
+    
+    # --- 检查 status 并提交 ---
     result = subprocess.run([git_bin, "status", "--porcelain"], capture_output=True, text=True)
     if result.returncode == 0 and result.stdout.strip():
         files = result.stdout.strip().split("\n")
@@ -468,6 +523,7 @@ def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
         else:    
             logger.info(f"  {files}")
             
+        # 处理 ReadMe.md 特殊逻辑（保留）
         for f in files:
             if ('M  ReadMe.md' in f) or ('A  ReadMe.md' in f):
                 b_ReadMe=''
@@ -475,31 +531,50 @@ def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
                     b_ReadMe=f.read(-1)
                 if b'#EmptyAfterPush' in b_ReadMe:
                     globals()['EmptyAfterPush']=True
-                    # print(stime(),'EmptyAfterPush',b_ReadMe[-99:])
-            # logger.info(f"  {f}")
-            
-        run_shell(git_bin, ["commit", "-m", commit_msg])    
+                    
+        # --- 执行 commit 并检查返回码 ---
+        commit_res = run_shell(git_bin, ["commit", "-m", commit_msg])
+        if commit_res.returncode != 0:
+            logger.error(f"git commit 失败，返回码: {commit_res.returncode}")
+            sys.exit(1)
     else:
         logger.info("暂存区为空（可能没有新增或修改）")
         
-    cmd_args = ["push", "-v", "--progress"] + extra_args + [remote_url, branch]
-    # 在 git_push 函数中，推送循环部分修改如下：
+    # --- 推送循环（仅重试网络错误，重试时显示连接详情）---
+    # 检查是否为 debug 模式（verbose >= 3）
+    is_debug = logger.getEffectiveLevel() <= logging.DEBUG
 
+    cmd_args = ["push", "-v", "--progress"] + extra_args + [remote_url, branch]
     for attempt in range(1, retry_count + 1):
         logger.info(f"===== 推送 {remote_url} {branch} (尝试 {attempt}/{retry_count}) 间隔 {retry_seconds}s =====")
+        
+        # 设置环境变量：如果首次 debug 或重试（attempt > 1），则启用 curl verbose
+        if is_debug or attempt > 1:
+            # 通过环境变量传递给 run_shell，但 run_shell 使用 env 副本，我们需要修改 env。
+            # 由于 run_shell 内部从 os.environ 复制，我们可以在调用前设置 os.environ，但更安全是修改 run_shell 支持 extra_env。
+            # 我们可以在调用 run_shell 前设置 os.environ，然后 run_shell 会继承。
+            os.environ["GIT_CURL_VERBOSE"] = "1"
+            os.environ["GIT_TRACE"] = "1"
+            # 如果是重试，记录日志
+            if attempt > 1:
+                logger.info("🔍 重试时启用详细连接日志 (GIT_CURL_VERBOSE=1)")
+        else:
+            # 确保这些变量不存在，避免影响后续
+            os.environ.pop("GIT_CURL_VERBOSE", None)
+            os.environ.pop("GIT_TRACE", None)
+        
         try:
             push_res = run_shell(git_bin, cmd_args, realtime=True)
             if push_res.returncode == 0:
                 if 'EmptyAfterPush' in globals() and globals()['EmptyAfterPush']:
                     with open(repo_root/'ReadMe.md','wb') as f:
                         f.write(b'')
-                    logger.info(f"{b_ReadMe} #EmptyAfterPush ReadMe.md 成功！ {stime()}")
+                    logger.info(f"EmptyAfterPush ReadMe.md 成功！ {stime()}")
                 logger.info(f"✅ 推送成功！ {stime()}")
                 break
             else:
-                # 判断是否为网络错误
-                error_output = (push_res.stderr or "") + (push_res.stdout or "")
-                is_network_error = any(keyword in error_output for keyword in [
+                error_output = push_res.stdout or ""
+                network_keywords = [
                     "Could not read from remote repository",
                     "ssh: connect to host",
                     "Connection timed out",
@@ -508,31 +583,31 @@ def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
                     "Failed to connect to",
                     "Network is unreachable",
                     "remote: fatal:",
-                    "HTTP 401",   # 401 是认证失败，通常不是临时网络问题，但有时 token 过期也算
-                    "HTTP 403",   # 403 权限不足，不应重试
-                    "HTTP 500",   # 服务器内部错误，可能临时，也可能不是
-                    # 更精确地，只有网络超时、连接重置等才重试，401/403 不重试
-                ])
-                # 排除认证/权限错误（401/403）不重试
-                if any(keyword in error_output for keyword in ["HTTP 401", "HTTP 403", "fatal: Authentication failed", "Permission denied (publickey)"]):
-                    is_network_error = False  # 这类错误不应重试
-                    
-                if is_network_error:
+                ]
+                auth_keywords = [
+                    "HTTP 401", "HTTP 403",
+                    "fatal: Authentication failed",
+                    "Permission denied (publickey)"
+                ]
+                is_network_error = any(k in error_output for k in network_keywords)
+                is_auth_error = any(k in error_output for k in auth_keywords)
+                
+                if is_network_error and not is_auth_error:
                     logger.warning(f"⚠️ 网络错误，稍后重试 (返回码: {push_res.returncode})")
                 else:
-                    logger.error(f"❌ 推送失败，非网络错误，退出。返回码: {push_res.returncode}")
+                    logger.error(f"❌ 推送失败，非网络错误或认证失败，退出。返回码: {push_res.returncode}")
                     sys.exit(1)
-                    
         except Exception as e:
-            # 异常可能也是网络问题，但无法确定，按网络错误处理并重试
             logger.warning(f"⚠️ 推送进程发生异常: {repr(e)}，可能为网络问题，重试")
-            # 但仍需检查是否为底层异常如权限拒绝？通常异常多为超时等，暂且重试
-        
+
         if attempt < retry_count:
             time.sleep(retry_seconds)
         else:
             logger.error(f"❌ 已达到最大重试次数 {retry_count}，网络持续失败，终止操作。")
             sys.exit(1)
+    else:
+        # 如果循环正常结束（即重试次数用完且未 break），理论上已经在上面 exit 了，但以防万一。
+        pass
 
 def git_list_big(git_bin: str, threshold_bytes: int) -> list[tuple[int, str, str]]:
     logger.info(f"===== 扫描历史记录中 >= {threshold_bytes/1024/1024:.2f} MB ({threshold_bytes} 字节) 的大文件 =====")
@@ -564,10 +639,7 @@ def git_list_big(git_bin: str, threshold_bytes: int) -> list[tuple[int, str, str
 
 def git_remove_big(git_bin: str, threshold_bytes: int, target_hashes: list[str] = None):
     logger.info("===== 准备清理历史大文件 =====")
-    logger.info("🛡️ 【安全保证】Git 的底层机制确切保证：")
-    logger.info("   1. 工具只会跳过该大文件的 Blob 对象及其直接关联。")
-    logger.info("   2. 彻底移除仅影响引入该大文件的 Commit 及其后续子 Commit。")
-    logger.info("   3. ⚠️ 引入该大文件之前的历史 Commit Hash 绝对不会受到任何影响，100% 保持原样！\n")
+    logger.info("🛡️ 【安全保证】Git 的底层机制确切保证：\n\t 1. 工具只会跳过该大文件的 Blob 对象及其直接关联。\n\t 2. 彻底移除仅影响引入该大文件的 Commit 及其后续子 Commit。\n\t 3. ⚠️ 引入该大文件之前的历史 Commit Hash 绝对不会受到任何影响，100% 保持原样！\n")
     
     check_cmd = run_shell(git_bin, ["filter-repo", "--version"], realtime=False)
     if check_cmd.returncode != 0:
@@ -630,9 +702,9 @@ def main():
     parser.add_argument("--user", "-u", nargs="?", const="AUTO", default=None, help="自动配置 Git 用户")
     parser.add_argument("--retry", "-r", type=int, default=10, help="网络断开或 Push 失败时的重试次数 (默认 10)")
     
-    # 新增 --verbose 参数，默认值为 2 (即INFO)
-    parser.add_argument("--verbose", "-v", type=int, default=2, 
-                        help="日志输出级别: 0=Error, 1=Warn, 2=Info(默认), 3=Debug")
+    # 新增 --verbose 参数
+    parser.add_argument("--verbose", "-v", type=int, default=3, 
+                        help="日志输出级别: 0=Error, 1=Warn, 2=Info, 3=Debug")
     parser.add_argument("mode", choices=["push", "pull", "init", "list-big", "listbig", "remove-big", "filter-repo"], help="操作模式")
     
     args, extra = parser.parse_known_args()
