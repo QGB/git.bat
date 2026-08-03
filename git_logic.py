@@ -102,53 +102,66 @@ def preprocess_args():
     valid_modes = {"push", "pull", "init", "list-big", "listbig", "remove-big", "filter-repo"}
     raw = sys.argv[1:]
 
-    url_indices = []
-    url_values = []
+    # 收集所有 URL 索引，用于判断
+    url_indices = set()
     for i, arg in enumerate(raw):
         if looks_like_url(arg):
-            url_indices.append(i)
-            url_values.append(arg)
+            url_indices.add(i)
 
     new = []
+    need_auto_user = False  # 是否需要在最后添加 --user
     i = 0
     while i < len(raw):
         arg = raw[i]
-        if arg in ("-u", "--user"):
-            if i + 1 < len(raw) and (i + 1) in url_indices:
-                new.append("--user")
-                new.append("--remote")
-                new.append(raw[i + 1])
-                i += 2
-                continue
-            else:
-                if i + 1 < len(raw):
-                    nxt = raw[i + 1]
-                    if nxt in valid_modes or nxt.startswith("-"):
-                        new.append(arg)
-                        i += 1
-                        continue
-                    else:
-                        new.append(arg)
-                        new.append(nxt)
-                        i += 2
-                        continue
-                else:
-                    new.append(arg)
-                    i += 1
-                    continue
 
-        if looks_like_url(arg):
-            if i > 0 and raw[i - 1] in ("-u", "--user"):
+        if arg in ("-u", "--user"):
+            # 检查下一个参数
+            if i + 1 < len(raw):
+                nxt = raw[i + 1]
+                # 如果下一个是 URL
+                if (i + 1) in url_indices:
+                    # -u <URL> => --user --remote <URL>
+                    new.append("--user")
+                    new.append("--remote")
+                    new.append(nxt)
+                    i += 2
+                    continue
+                # 如果下一个是 mode 或选项
+                elif nxt in valid_modes or nxt.startswith("-"):
+                    # 忽略 -u，后面保留原样，但标记需要自动用户
+                    need_auto_user = True
+                    i += 1  # 跳过 -u，保留 nxt 在后续处理
+                    continue
+                else:
+                    # 否则视为用户名：保留 -u 及其参数
+                    new.append(arg)
+                    new.append(nxt)
+                    i += 2
+                    continue
+            else:
+                # -u 是最后一个参数，单独使用，也需要自动用户
+                need_auto_user = True
                 i += 1
                 continue
+
+        # 处理独立的 URL（不在 -u 之后）
+        if looks_like_url(arg):
+            # 检查前一个参数是否是 -u（但前一个如果是 -u，我们已经在上面的分支处理过了，所以这里不会重复）
+            # 但有可能前一个 -u 被忽略（当它后面是 mode 时），此时 URL 独立出现，需转换
             new.append("--remote")
             new.append(arg)
             i += 1
             continue
 
+        # 其他参数原样保留
         new.append(arg)
         i += 1
 
+    # 如果标记了需要自动用户，则在最后添加 --user
+    if need_auto_user:
+        new.append("--user")
+
+    # 确保存在 mode
     has_mode = any(a in valid_modes for a in new)
     if not has_mode:
         new.append("push")
