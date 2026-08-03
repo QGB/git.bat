@@ -716,7 +716,7 @@ def main():
     parser.add_argument("--retry", "-r", type=int, default=10, help="网络断开或 Push 失败时的重试次数 (默认 10)")
     
     # 新增 --verbose 参数
-    parser.add_argument("--verbose", "-v", type=int, default=3, 
+    parser.add_argument("--verbose", "-v", type=int, default=2, 
                         help="日志输出级别: 0=Error, 1=Warn, 2=Info, 3=Debug")
     parser.add_argument("mode", choices=["push", "pull", "init", "list-big", "listbig", "remove-big", "filter-repo"], help="操作模式")
     
