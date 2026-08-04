@@ -563,9 +563,10 @@ def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
         
         # 设置环境变量：如果首次 debug 或重试（attempt > 1），则启用 curl verbose
         if is_debug or attempt > 1:
-            # 通过环境变量传递给 run_shell，但 run_shell 使用 env 副本，我们需要修改 env。
-            # 由于 run_shell 内部从 os.environ 复制，我们可以在调用前设置 os.environ，但更安全是修改 run_shell 支持 extra_env。
-            # 我们可以在调用 run_shell 前设置 os.environ，然后 run_shell 会继承。
+            '''
+            问题：直接修改进程全局环境变量，后续所有子进程永久继承调试日志；如果脚本持续运行多次命令，调试开关无法关闭。
+✅ 修复：不要修改全局 os.environ，把变量放到run_shell extra_env 中传递。
+'''
             os.environ["GIT_CURL_VERBOSE"] = "1"
             os.environ["GIT_TRACE"] = "1"
             # 如果是重试，记录日志
@@ -624,6 +625,9 @@ def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
 
 def git_list_big(git_bin: str, threshold_bytes: int) -> list[tuple[int, str, str]]:
     logger.info(f"===== 扫描历史记录中 >= {threshold_bytes/1024/1024:.2f} MB ({threshold_bytes} 字节) 的大文件 =====")
+    '''
+    超大仓库 rev-list --objects --all 输出量巨大，全部存入内存；建议支持流式输出，或者增加进度日志。
+    '''
     try:
         p1 = subprocess.Popen([git_bin, "rev-list", "--objects", "--all"], stdout=subprocess.PIPE, text=True)
         p2 = subprocess.Popen([git_bin, "cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize) %(rest)"],
@@ -689,6 +693,7 @@ def git_remove_big(git_bin: str, threshold_bytes: int, target_hashes: list[str] 
         f"if blob.original_id in target_hashes:\n"
         f"    blob.skip()"
     )
+    #是否隐藏坑：blob.original_id 是bytes，集合中存放字符串b"xxx"对比会永久不匹配，清理完全失效吗？
     cmd_args = ["filter-repo", "--blob-callback", callback_code, "--force"]
     res = run_shell(git_bin, cmd_args, realtime=True)
     if res.returncode == 0:
