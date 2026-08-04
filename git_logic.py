@@ -226,8 +226,8 @@ def apply_git_user_config(git_bin: str, remote_url: str, user_arg: str):
         target_user = remote_user if user_arg == "AUTO" else user_arg
         if not target_user: target_user = "git_user"; logger.warning("无法提取用户名，回退为 'git_user'")
         target_email = f"{target_user}@users.noreply.github.com"
-        run_shell(git_bin, ["config", "user.name", target_user]); run_shell(git_bin, ["config", "user.email", target_email])
         logger.info(f"强制应用用户配置 (-u): user.name=[{target_user}], user.email=[{target_email}]")
+        run_shell(git_bin, ["config", "user.name", target_user]); run_shell(git_bin, ["config", "user.email", target_email])
         return
     if not remote_user: return
     local_name = subprocess.run([git_bin, "config", "user.name"], capture_output=True, text=True).stdout.strip()
