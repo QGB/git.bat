@@ -376,7 +376,7 @@ def main():
     parser.add_argument("--threshold", type=int, default=0, help="字节数阈值（兼容）")
     parser.add_argument("--hashes", "--hash", default="", help="手动指定 Blob Hash，逗号分隔")
     parser.add_argument("--remote", default="", help="完整远程 URL")
-    parser.add_argument("--auth", help="认证信息（已废弃）")
+    # parser.add_argument("--auth", help="认证信息（已废弃）")
     parser.add_argument("--commit-msg", "--commit_msg", '-m', default="", help="自定义 commit 消息")
     parser.add_argument("--user", "-u", nargs="?", const="AUTO", default=None, help="自动配置 Git 用户")
     parser.add_argument("--retry", "-r", type=int, default=10, help="Push 失败重试次数")
@@ -410,16 +410,14 @@ def main():
         large_files = scan_large_files(repo_root, threshold_bytes)
         has_large = len(large_files) > 0
         logger.info(f"扫描到 {len(large_files)} 个本地大文件")
-        lfs_available = check_lfs_available(git_exe)
-        if has_large and not lfs_available:
-            if not install_lfs(): sys.exit(1)
-            if not check_lfs_available(git_exe): logger.critical("Git LFS 安装后仍不可用"); sys.exit(1)
-            lfs_available = True
-        if has_large or lfs_available:
+        if has_large:
+            if not check_lfs_available(git_exe):
+                if not install_lfs(): sys.exit(1)
+                if not check_lfs_available(git_exe): logger.critical("Git LFS 安装后仍不可用"); sys.exit(1)
             if not is_lfs_initialized(repo_root):
-                if not init_lfs(git_exe): sys.exit(1)
+                if not init_lfs(git_exe):sys.exit(1)
             else: logger.info("LFS hooks 已初始化")
-        if has_large: clean_and_apply_lfs(git_exe, repo_root, large_files)
+            clean_and_apply_lfs(git_exe, repo_root, large_files)
         if remote_url: set_remote(git_exe, remote_url)
         if args.mode == "pull": git_pull(git_exe, args.branch, extra, remote_url)
         elif args.mode == "push": git_push(git_exe, args.branch, repo_root, extra, args.commit_msg, remote_url, args.user, args.retry)
