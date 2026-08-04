@@ -249,16 +249,7 @@ def apply_git_user_config(git_bin: str, remote_url: str, user_arg: str):
 def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
              commit_msg: str = "", remote_url: str = "",
              user_arg: str = None, retry_count: int = 10, retry_seconds=5):
-    EmptyAfterPush = False  # 局部变量，避免污染全局
-    if not commit_msg:
-        max_file, max_size = None, -1
-        skip_dirs = {".git", "build", "dist", "__pycache__"}
-        for path in repo_root.rglob("*"):
-            if any(part in skip_dirs for part in path.parts) or not path.is_file(): continue
-            try: fsize = path.stat().st_size
-            except OSError: continue
-            if fsize > max_size: max_size = fsize; max_file = str(path.relative_to(repo_root)).replace("\\", "/")
-        commit_msg =__file__[-20:]+ f' auto [{max_file} ({max_size} B)] {stime()}' if max_file else f'auto {stime()}'
+    EmptyAfterPush = False
     logger.info(f"当前工作目录: {repo_root.resolve()}")
     if not (repo_root / ".git").exists():
         logger.info("检测到当前目录尚未初始化 Git 仓库，自动执行 git init...")
@@ -267,12 +258,24 @@ def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
     apply_git_user_config(git_bin, remote_url, user_arg)
     if run_shell(git_bin, ["add", "-A"]).returncode != 0: logger.error("git add 失败"); sys.exit(1)
     result = subprocess.run([git_bin, "status", "--porcelain"], capture_output=True, text=True)
+    changed_files = []
     if result.returncode == 0 and result.stdout.strip():
-        files = result.stdout.strip().split("\n")
-        logger.info(f"变更文件: {len(files)} 个" + (f" (显示前10: {files[:10]})" if len(files) > 10 else f" {files}"))
-        for f in files:
-            if ('M  ReadMe.md' in f) or ('A  ReadMe.md' in f):
-                with open(repo_root/'ReadMe.md', 'rb') as fh:
+        changed_files = [line[3:].strip() for line in result.stdout.strip().split("\n") if line[3:].strip()]
+    if not commit_msg:
+        max_file, max_size = None, -1
+        for rel in changed_files:
+            fp = repo_root / rel
+            if not fp.is_file(): continue
+            try: sz = fp.stat().st_size
+            except OSError: continue
+            if sz > max_size: max_size = sz; max_file = rel.replace("\\", "/")
+        tag = Path(__file__).name if '__file__' in dir() else 'git-auto-lfs'
+        commit_msg = f"{tag} auto update [max: {max_file} ({max_size} B)] {stime()}" if max_file else f"{tag} auto update {stime()}"
+    if changed_files:
+        logger.info(f"变更文件: {len(changed_files)} 个" + (f" (显示前10: {changed_files[:10]})" if len(changed_files) > 10 else f" {changed_files}"))
+        for f in changed_files:
+            if f == "ReadMe.md":
+                with open(repo_root / "ReadMe.md", 'rb') as fh:
                     if b'#EmptyAfterPush' in fh.read(): EmptyAfterPush = True
         if run_shell(git_bin, ["commit", "-m", commit_msg]).returncode != 0: logger.error("git commit 失败"); sys.exit(1)
     else: logger.info("暂存区为空")
@@ -288,23 +291,22 @@ def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
             push_res = run_shell(git_bin, cmd_args, realtime=True, extra_env=extra_env)
             if push_res.returncode == 0:
                 if EmptyAfterPush:
-                    with open(repo_root/'ReadMe.md', 'wb') as f: f.write(b'')
+                    with open(repo_root / 'ReadMe.md', 'wb') as f: f.write(b'')
                     logger.info(f"EmptyAfterPush 成功 {stime()}")
                 logger.info(f"✅ 推送成功 {stime()}"); break
             else:
-                error_output = push_res.stdout or ""
-                network_keywords = ["Could not read from remote repository", "ssh: connect to host", "Connection timed out",
-                                    "The remote end hung up unexpectedly", "fatal: unable to access", "Failed to connect to",
-                                    "Network is unreachable", "remote: fatal:"]
-                auth_keywords = ["HTTP 401", "HTTP 403", "fatal: Authentication failed", "Permission denied (publickey)"]
-                is_network_error = any(k in error_output for k in network_keywords)
-                is_auth_error = any(k in error_output for k in auth_keywords)
-                if is_network_error and not is_auth_error: logger.warning(f"⚠️ 网络错误，稍后重试 (返回码: {push_res.returncode})")
+                eout = push_res.stdout or ""
+                net_kw = ["Could not read from remote repository","ssh: connect to host","Connection timed out",
+                          "The remote end hung up unexpectedly","fatal: unable to access","Failed to connect to",
+                          "Network is unreachable","remote: fatal:"]
+                auth_kw = ["HTTP 401","HTTP 403","fatal: Authentication failed","Permission denied (publickey)"]
+                is_net = any(k in eout for k in net_kw); is_auth = any(k in eout for k in auth_kw)
+                if is_net and not is_auth: logger.warning(f"⚠️ 网络错误，稍后重试 (返回码: {push_res.returncode})")
                 else: logger.error(f"❌ 推送失败 (返回码: {push_res.returncode})"); sys.exit(1)
         except Exception as e: logger.warning(f"⚠️ 异常: {repr(e)}，重试")
         if attempt < retry_count: time.sleep(retry_seconds)
         else: logger.error(f"❌ 达到最大重试次数 {retry_count}"); sys.exit(1)
-
+        
 def git_list_big(git_bin: str, threshold_bytes: int) -> list[tuple[int, str, str]]:
     logger.info(f"===== 扫描历史大文件 >= {threshold_bytes/1024/1024:.2f} MB =====")
     try:
