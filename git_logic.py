@@ -33,10 +33,8 @@ def parse_url_info(url: str):
     if "@" in parsed.netloc:
         auth, host = parsed.netloc.split("@", 1)
         remote_url = urlunparse(parsed._replace(netloc=f"{auth}@{host}"))
-    else:
-        remote_url = url
-    repo_path = parsed.path.lstrip("/")
-    return remote_url, auth, repo_path
+    else: remote_url = url
+    return remote_url, auth, parsed.path.lstrip("/")
 
 def parse_size_str(val: str) -> int:
     if not val: return 104857600
@@ -59,16 +57,11 @@ def preprocess_args():
         if arg in ("-u", "--user"):
             if i + 1 < len(raw):
                 nxt = raw[i + 1]
-                if (i + 1) in url_indices:
-                    new.extend(["--user", "--remote", nxt]); i += 2; continue
-                elif nxt in valid_modes or nxt.startswith("-"):
-                    need_auto_user = True; i += 1; continue
-                else:
-                    new.extend([arg, nxt]); i += 2; continue
-            else:
-                need_auto_user = True; i += 1; continue
-        if looks_like_url(arg):
-            new.extend(["--remote", arg]); i += 1; continue
+                if (i + 1) in url_indices: new.extend(["--user", "--remote", nxt]); i += 2; continue
+                elif nxt in valid_modes or nxt.startswith("-"): need_auto_user = True; i += 1; continue
+                else: new.extend([arg, nxt]); i += 2; continue
+            else: need_auto_user = True; i += 1; continue
+        if looks_like_url(arg): new.extend(["--remote", arg]); i += 1; continue
         new.append(arg); i += 1
     if need_auto_user: new.append("--user")
     if not any(a in valid_modes for a in new): new.append("push")
@@ -99,7 +92,7 @@ def get_branch_tracking_url(git_bin: str, branch: str) -> str:
     except: pass
     return ""
 
-def run_shell(git_bin: str, args: list[str], realtime: bool = False) -> subprocess.CompletedProcess:
+def run_shell(git_bin: str, args: list[str], realtime: bool = False, extra_env: dict = None) -> subprocess.CompletedProcess:
     cmd = [git_bin] + args
     git_exe_path = Path(git_bin).resolve()
     git_bin_dir = git_exe_path.parent; git_root = git_bin_dir.parent
@@ -108,6 +101,7 @@ def run_shell(git_bin: str, args: list[str], realtime: bool = False) -> subproce
     env["NoDefaultCurrentDirectoryInExePath"] = "1"; env["GIT_FLUSH"] = "1"; env["PYTHONUNBUFFERED"] = "1"
     valid_paths = [p for p in portable_paths if os.path.exists(p)]
     env["PATH"] = os.pathsep.join(valid_paths) + os.pathsep + env.get("PATH", "")
+    if extra_env: env.update(extra_env)  # 局部注入，不污染全局
     logger.info(f"▶ RUN: {' '.join(cmd)}")
     proc = None
     try:
@@ -134,8 +128,7 @@ def run_shell(git_bin: str, args: list[str], realtime: bool = False) -> subproce
     except Exception as e:
         logger.critical(f"执行异常: {repr(e)}"); raise
 
-def check_lfs_available(git_bin: str) -> bool:
-    return run_shell(git_bin, ["lfs", "version"], realtime=False).returncode == 0
+def check_lfs_available(git_bin: str) -> bool: return run_shell(git_bin, ["lfs", "version"], realtime=False).returncode == 0
 
 def is_lfs_initialized(repo_root: Path) -> bool:
     hook_path = repo_root / ".git" / "hooks" / "pre-push"
@@ -155,25 +148,26 @@ def install_lfs() -> bool:
                 try: subprocess.run(cmd, check=True); return True
                 except subprocess.CalledProcessError: pass
         return False
-    elif system == "Darwin":
-        if shutil.which("brew"):
-            try: subprocess.run(["brew", "install", "git-lfs"], check=True); return True
-            except subprocess.CalledProcessError: return False
+    elif system == "Darwin" and shutil.which("brew"):
+        try: subprocess.run(["brew", "install", "git-lfs"], check=True); return True
+        except subprocess.CalledProcessError: return False
     return False
 
 def init_lfs(git_bin: str) -> bool:
     logger.info("执行 git lfs install 初始化...")
-    res = run_shell(git_bin, ["lfs", "install"])
-    if res.returncode != 0: logger.error("Git LFS 初始化失败！"); return False
+    if run_shell(git_bin, ["lfs", "install"]).returncode != 0: logger.error("Git LFS 初始化失败！"); return False
     return True
 
 def set_remote(git_bin: str, remote_url: str):
     if not remote_url: return
     check = subprocess.run([git_bin, "remote", "get-url", "origin"], capture_output=True, text=True)
     if check.returncode == 0:
-        logger.info("更新远程 origin 地址..."); run_shell(git_bin, ["remote", "set-url", "origin", remote_url])
+        if check.stdout.strip() == remote_url: return  # 避免重复设置
+        logger.info("更新远程 origin 地址...")
+        run_shell(git_bin, ["remote", "set-url", "origin", remote_url])
     else:
-        logger.info("添加远程 origin 地址..."); run_shell(git_bin, ["remote", "add", "origin", remote_url])
+        logger.info("添加远程 origin 地址...")
+        run_shell(git_bin, ["remote", "add", "origin", remote_url])
 
 def scan_large_files(repo_root: Path, threshold: int) -> set[str]:
     large_files = set()
@@ -205,8 +199,8 @@ def clean_and_apply_lfs(git_bin: str, repo_root: Path, large_patterns: set[str])
 
 def git_pull(git_bin: str, branch: str, extra_args: list[str], remote_url: str = ""):
     logger.info(f"===== 开始执行 git pull {remote_url} {branch} =====")
-    res = run_shell(git_bin, ["pull", "--progress"] + extra_args + [remote_url, branch], realtime=True)
-    if res.returncode != 0: logger.error("git pull 失败！"); sys.exit(1)
+    if run_shell(git_bin, ["pull", "--progress"] + extra_args + [remote_url, branch], realtime=True).returncode != 0:
+        logger.error("git pull 失败！"); sys.exit(1)
     logger.info("===== 开始执行 git lfs pull =====")
     run_shell(git_bin, ["lfs", "pull"], realtime=True)
 
@@ -219,55 +213,43 @@ def extract_remote_user_from_url(remote_url: str) -> str | None:
         if path_parts: return path_parts[0]
     if remote_url.startswith("git@"):
         parts = remote_url.split("@", 1)
-        if len(parts) == 2:
-            host_path = parts[1]
-            if ":" in host_path:
-                _, path = host_path.split(":", 1)
-                path_parts = [p for p in path.strip("/").split("/") if p]
-                if path_parts: return path_parts[0]
-    path = parsed.path if parsed.path else remote_url
-    path_parts = [p for p in path.strip("/").split("/") if p]
+        if len(parts) == 2 and ":" in parts[1]:
+            path_parts = [p for p in parts[1].split(":", 1)[1].strip("/").split("/") if p]
+            if path_parts: return path_parts[0]
+    path_parts = [p for p in (parsed.path if parsed.path else remote_url).strip("/").split("/") if p]
     return path_parts[0] if path_parts else None
 
 def apply_git_user_config(git_bin: str, remote_url: str, user_arg: str):
     if not remote_url: return
     remote_user = extract_remote_user_from_url(remote_url)
     if user_arg is not None:
-        if user_arg == "AUTO":
-            target_user = remote_user
-            if not target_user:
-                logger.warning("无法从远程 URL 中提取到用户名，回退为 'git_user'"); target_user = "git_user"
-        else: target_user = user_arg
+        target_user = remote_user if user_arg == "AUTO" else user_arg
+        if not target_user: target_user = "git_user"; logger.warning("无法提取用户名，回退为 'git_user'")
         target_email = f"{target_user}@users.noreply.github.com"
         run_shell(git_bin, ["config", "user.name", target_user]); run_shell(git_bin, ["config", "user.email", target_email])
         logger.info(f"强制应用用户配置 (-u): user.name=[{target_user}], user.email=[{target_email}]")
         return
     if not remote_user: return
-    res_name = subprocess.run([git_bin, "config", "user.name"], capture_output=True, text=True)
-    local_name = res_name.stdout.strip()
-    res_email = subprocess.run([git_bin, "config", "user.email"], capture_output=True, text=True)
-    local_email = res_email.stdout.strip()
+    local_name = subprocess.run([git_bin, "config", "user.name"], capture_output=True, text=True).stdout.strip()
+    local_email = subprocess.run([git_bin, "config", "user.email"], capture_output=True, text=True).stdout.strip()
     if local_name != remote_user:
         logger.warning("发现当前 Git 用户配置与远程目标不一致！")
-        logger.info(f"当前 Git 本地配置: user.name=[{local_name or '未设置'}], user.email=[{local_email or '未设置'}]")
-        logger.info(f"远程目标 URL 用户: [{remote_user}]")
-        print("\n请选择本次 Commit 要使用的配置 (命令行带入 -u 参数即可跳过此交互询问):")
-        print(f"  [1] 保持当前 Git 本地配置不变\n  [2] 更新为远程目标用户名 ({remote_user})")
+        print(f"\n请选择本次 Commit 使用配置:\n  [1] 保持原样 ({local_name})\n  [2] 更新为目标 ({remote_user})")
         try: choice = input("请输入 1 或 2 (默认 1): ").strip()
-        except KeyboardInterrupt: logger.info("用户交互操作取消。"); sys.exit(130)
+        except KeyboardInterrupt: sys.exit(130)
         if choice == "2":
             run_shell(git_bin, ["config", "user.name", remote_user])
             default_email = f"{remote_user}@users.noreply.github.com"
-            try: new_email = input(f"请输入对应的邮箱 (直接回车默认使用: {default_email}): ").strip()
-            except KeyboardInterrupt: logger.info("用户交互操作取消。"); sys.exit(130)
-            if not new_email: new_email = default_email
+            try: new_email = input(f"输入邮箱 (默认: {default_email}): ").strip() or default_email
+            except KeyboardInterrupt: sys.exit(130)
             run_shell(git_bin, ["config", "user.email", new_email])
-            logger.info(f"✅ 已成功更新仓库配置: user.name={remote_user}, user.email={new_email}")
+            logger.info(f"✅ 更新仓库配置: user.name={remote_user}, user.email={new_email}")
         else: logger.info("保持原配置不变。")
 
 def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
              commit_msg: str = "", remote_url: str = "",
              user_arg: str = None, retry_count: int = 10, retry_seconds=5):
+    EmptyAfterPush = False  # 局部变量，避免污染全局
     if not commit_msg:
         max_file, max_size = None, -1
         skip_dirs = {".git", "build", "dist", "__pycache__"}
@@ -283,37 +265,32 @@ def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
         run_shell(git_bin, ["init"])
         if remote_url: run_shell(git_bin, ["remote", "add", "origin", remote_url])
     apply_git_user_config(git_bin, remote_url, user_arg)
-    add_res = run_shell(git_bin, ["add", "-A"])
-    if add_res.returncode != 0: logger.error(f"git add 失败，返回码: {add_res.returncode}"); sys.exit(1)
+    if run_shell(git_bin, ["add", "-A"]).returncode != 0: logger.error("git add 失败"); sys.exit(1)
     result = subprocess.run([git_bin, "status", "--porcelain"], capture_output=True, text=True)
     if result.returncode == 0 and result.stdout.strip():
         files = result.stdout.strip().split("\n")
-        logger.info(f"本次涉及变更的文件列表 (共 {len(files)} 个):")
-        if len(files) > 10: logger.info(f"  ... 以及其他 {len(files) - 10} 个文件")
-        else: logger.info(f"  {files}")
+        logger.info(f"变更文件: {len(files)} 个" + (f" (显示前10: {files[:10]})" if len(files) > 10 else f" {files}"))
         for f in files:
             if ('M  ReadMe.md' in f) or ('A  ReadMe.md' in f):
-                with open(repo_root/'ReadMe.md','rb') as fh: b_ReadMe=fh.read(-1)
-                if b'#EmptyAfterPush' in b_ReadMe: globals()['EmptyAfterPush']=True
-        commit_res = run_shell(git_bin, ["commit", "-m", commit_msg])
-        if commit_res.returncode != 0: logger.error(f"git commit 失败，返回码: {commit_res.returncode}"); sys.exit(1)
-    else: logger.info("暂存区为空（可能没有新增或修改）")
+                with open(repo_root/'ReadMe.md', 'rb') as fh:
+                    if b'#EmptyAfterPush' in fh.read(): EmptyAfterPush = True
+        if run_shell(git_bin, ["commit", "-m", commit_msg]).returncode != 0: logger.error("git commit 失败"); sys.exit(1)
+    else: logger.info("暂存区为空")
     is_debug = logger.getEffectiveLevel() <= logging.DEBUG
     cmd_args = ["push", "-v", "--progress"] + extra_args + [remote_url, branch]
     for attempt in range(1, retry_count + 1):
         logger.info(f"===== 推送 {remote_url} {branch} (尝试 {attempt}/{retry_count}) 间隔 {retry_seconds}s =====")
+        extra_env = {}
         if is_debug or attempt > 1:
-            os.environ["GIT_CURL_VERBOSE"] = "1"; os.environ["GIT_TRACE"] = "1"
-            if attempt > 1: logger.info("🔍 重试时启用详细连接日志 (GIT_CURL_VERBOSE=1)")
-        else:
-            os.environ.pop("GIT_CURL_VERBOSE", None); os.environ.pop("GIT_TRACE", None)
+            extra_env["GIT_CURL_VERBOSE"] = "1"; extra_env["GIT_TRACE"] = "1"
+            if attempt > 1: logger.info("🔍 启用详细连接日志")
         try:
-            push_res = run_shell(git_bin, cmd_args, realtime=True)
+            push_res = run_shell(git_bin, cmd_args, realtime=True, extra_env=extra_env)
             if push_res.returncode == 0:
-                if 'EmptyAfterPush' in globals() and globals()['EmptyAfterPush']:
-                    with open(repo_root/'ReadMe.md','wb') as f: f.write(b'')
-                    logger.info(f"EmptyAfterPush ReadMe.md 成功！ {stime()}")
-                logger.info(f"✅ 推送成功！ {stime()}"); break
+                if EmptyAfterPush:
+                    with open(repo_root/'ReadMe.md', 'wb') as f: f.write(b'')
+                    logger.info(f"EmptyAfterPush 成功 {stime()}")
+                logger.info(f"✅ 推送成功 {stime()}"); break
             else:
                 error_output = push_res.stdout or ""
                 network_keywords = ["Could not read from remote repository", "ssh: connect to host", "Connection timed out",
@@ -322,64 +299,69 @@ def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
                 auth_keywords = ["HTTP 401", "HTTP 403", "fatal: Authentication failed", "Permission denied (publickey)"]
                 is_network_error = any(k in error_output for k in network_keywords)
                 is_auth_error = any(k in error_output for k in auth_keywords)
-                if is_network_error and not is_auth_error:
-                    logger.warning(f"⚠️ 网络错误，稍后重试 (返回码: {push_res.returncode})")
-                else:
-                    logger.error(f"❌ 推送失败，非网络错误或认证失败，退出。返回码: {push_res.returncode}"); sys.exit(1)
-        except Exception as e:
-            logger.warning(f"⚠️ 推送进程发生异常: {repr(e)}，可能为网络问题，重试")
+                if is_network_error and not is_auth_error: logger.warning(f"⚠️ 网络错误，稍后重试 (返回码: {push_res.returncode})")
+                else: logger.error(f"❌ 推送失败 (返回码: {push_res.returncode})"); sys.exit(1)
+        except Exception as e: logger.warning(f"⚠️ 异常: {repr(e)}，重试")
         if attempt < retry_count: time.sleep(retry_seconds)
-        else: logger.error(f"❌ 已达到最大重试次数 {retry_count}，网络持续失败，终止操作。"); sys.exit(1)
+        else: logger.error(f"❌ 达到最大重试次数 {retry_count}"); sys.exit(1)
 
 def git_list_big(git_bin: str, threshold_bytes: int) -> list[tuple[int, str, str]]:
-    logger.info(f"===== 扫描历史记录中 >= {threshold_bytes/1024/1024:.2f} MB ({threshold_bytes} 字节) 的大文件 =====")
+    logger.info(f"===== 扫描历史大文件 >= {threshold_bytes/1024/1024:.2f} MB =====")
     try:
         p1 = subprocess.Popen([git_bin, "rev-list", "--objects", "--all"], stdout=subprocess.PIPE, text=True)
         p2 = subprocess.Popen([git_bin, "cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize) %(rest)"],
                               stdin=p1.stdout, stdout=subprocess.PIPE, text=True)
         p1.stdout.close()
-        output, _ = p2.communicate()
         large_files = []
-        for line in output.splitlines():
+        count = 0
+        for line in p2.stdout:  # 流式读取，不一次性加载到内存
+            count += 1
+            if count % 10000 == 0: logger.info(f"已扫描 {count} 个对象...")
             parts = line.split(" ", 3)
-            if len(parts) >= 4 and parts[1] == "blob" and int(parts[2]) >= threshold_bytes:
-                large_files.append((int(parts[2]), parts[3], parts[0]))
+            if len(parts) >= 4 and parts[1] == "blob":
+                size = int(parts[2])
+                if size >= threshold_bytes: large_files.append((size, parts[3], parts[0]))
+        p2.wait()
         large_files.sort(key=lambda x: x[0], reverse=True)
-        if not large_files: logger.info("🎉 历史记录中未发现超过设定的文件。")
+        if not large_files: logger.info("🎉 未发现超过阈值的大文件。")
         else:
             print(f"\n{'大小 (MB)':<12} | {'Blob Hash':<40} | {'文件路径'}")
             print("-" * 85)
             for size, path, blob_hash in large_files: print(f"{size/1024/1024:<12.2f} | {blob_hash:<40} | {path}")
         return large_files
     except Exception as e:
-        logger.error(f"获取历史记录大文件失败: {e}"); return []
+        logger.error(f"扫描失败: {e}"); return []
 
 def git_remove_big(git_bin: str, threshold_bytes: int, target_hashes: list[str] = None):
     logger.info("===== 准备清理历史大文件 =====")
-    logger.info("🛡️ 【安全保证】Git 的底层机制确切保证：\n\t 1. 工具只会跳过该大文件的 Blob 对象及其直接关联。\n\t 2. 彻底移除仅影响引入该大文件的 Commit 及其后续子 Commit。\n\t 3. ⚠️ 引入该大文件之前的历史 Commit Hash 绝对不会受到任何影响，100% 保持原样！\n")
-    check_cmd = run_shell(git_bin, ["filter-repo", "--version"], realtime=False)
-    if check_cmd.returncode != 0:
-        logger.error("未检测到 git-filter-repo 工具。"); logger.info("💡 请先在终端运行安装：pip install git-filter-repo"); sys.exit(1)
+    logger.info("🛡️ 仅移除指定 Blob 及其关联 Commit，更早的历史哈希保持不变。\n")
+    if run_shell(git_bin, ["filter-repo", "--version"]).returncode != 0:
+        logger.error("未检测到 git-filter-repo，请先安装：pip install git-filter-repo"); sys.exit(1)
     hashes_to_remove = set()
     if target_hashes:
         for h in target_hashes:
-            cleaned = h.strip()
-            if cleaned: hashes_to_remove.add(cleaned)
-        logger.info(f"使用指定的 {len(hashes_to_remove)} 个 Blob Hash 进行精准删除。")
+            h = h.strip()
+            if h: hashes_to_remove.add(h)
+        logger.info(f"使用指定 {len(hashes_to_remove)} 个 Blob Hash 进行精准删除。")
     else:
         large_files = git_list_big(git_bin, threshold_bytes)
-        if not large_files: logger.info("没有找到符合条件的大文件，无需清理。"); return
+        if not large_files: logger.info("没有符合条件的大文件。"); return
         for _, _, blob_hash in large_files: hashes_to_remove.add(blob_hash)
-    if not hashes_to_remove: logger.info("没有待清理的 Blob Hash，操作已取消。"); return
-    logger.info(f"即将按 Blob Hash 精准擦除以下 {len(hashes_to_remove)} 个数据节点:")
-    for h in sorted(hashes_to_remove): logger.info(f"  - Blob Hash: {h}")
-    hash_list_code = ", ".join([f'b"{h}"' for h in hashes_to_remove])
-    callback_code = f"target_hashes = {{{hash_list_code}}}\nif blob.original_id in target_hashes:\n    blob.skip()"
+    if not hashes_to_remove: return
+    logger.info(f"即将擦除 {len(hashes_to_remove)} 个 Blob:")
+    for h in sorted(hashes_to_remove): logger.info(f"  - {h}")
+    # 核心修复：在 callback 中使用 .decode() 将 bytes 转成字符串，与集合中的字符串对比
+    hash_list_code = ", ".join([f'"{h}"' for h in hashes_to_remove])
+    callback_code = (
+        f"target_hashes = {{{hash_list_code}}}\n"
+        f"if blob.original_id.decode('ascii') in target_hashes:\n"
+        f"    blob.skip()"
+    )
     res = run_shell(git_bin, ["filter-repo", "--blob-callback", callback_code, "--force"], realtime=True)
     if res.returncode == 0:
-        logger.info("✅ 历史大文件 Blob 已成功擦除！(之前的 Commit 完全保留未动)")
-        logger.warning("⚠️  注意：关联历史记录已被重写，推送时需使用强制推送 (例如: --force)。")
-    else: logger.error("❌ 清理失败！"); sys.exit(1)
+        logger.info("✅ 历史大文件 Blob 已擦除（之前 Commit 保留未动）")
+        logger.warning("⚠️ 历史已重写，推送需使用 --force")
+    else: logger.error("❌ 清理失败"); sys.exit(1)
 
 def main():
     sys.argv = preprocess_args()
@@ -389,60 +371,59 @@ def main():
     parser.add_argument("--git", default=default_git, help="git 可执行文件路径")
     parser.add_argument("--branch", '-b', default=default_branch, help="分支名称")
     parser.add_argument("--size", '-s', default="100mb", help="大文件大小限制（默认 100mb）")
-    parser.add_argument("--threshold", type=int, default=0, help="（兼容项）字节数阈值")
-    parser.add_argument("--hashes", "--hash", default="", help="手动要清理的 Blob Hash（多个用逗号隔开）")
+    parser.add_argument("--threshold", type=int, default=0, help="字节数阈值（兼容）")
+    parser.add_argument("--hashes", "--hash", default="", help="手动指定 Blob Hash，逗号分隔")
     parser.add_argument("--remote", default="", help="完整远程 URL")
-    parser.add_argument("--auth", help="认证信息 user:token（已废弃）")
+    parser.add_argument("--auth", help="认证信息（已废弃）")
     parser.add_argument("--commit-msg", "--commit_msg", '-m', default="", help="自定义 commit 消息")
     parser.add_argument("--user", "-u", nargs="?", const="AUTO", default=None, help="自动配置 Git 用户")
-    parser.add_argument("--retry", "-r", type=int, default=10, help="网络断开或 Push 失败时的重试次数 (默认 10)")
-    parser.add_argument("--verbose", "-v", type=int, default=2, help="日志输出级别: 0=Error, 1=Warn, 2=Info, 3=Debug")
-    parser.add_argument("mode", choices=["push", "pull", "init", "list-big", "listbig", "remove-big", "filter-repo"], help="操作模式")
+    parser.add_argument("--retry", "-r", type=int, default=10, help="Push 失败重试次数")
+    parser.add_argument("--verbose", "-v", type=int, default=2, help="日志级别: 0=Error, 1=Warn, 2=Info, 3=Debug")
+    parser.add_argument("mode", choices=["push", "pull", "init", "list-big", "listbig", "remove-big", "filter-repo"])
     args, extra = parser.parse_known_args()
     setup_logging(args.verbose)
     git_exe = find_git(args.git)
     repo_root = Path.cwd()
     remote_url = args.remote or get_origin_url(git_exe) or get_branch_tracking_url(git_exe, args.branch)
     if not remote_url and args.mode not in ("list-big", "listbig", "remove-big", "filter-repo"):
-        logger.critical("未提供远程仓库地址，且未找到 origin 或当前分支的 tracking 远程配置。")
-        logger.info("💡 请通过参数传递 URL，或先配置远程仓库：git remote add origin <url>"); sys.exit(1)
+        logger.critical("未提供远程仓库地址，且未找到 origin/tracking 配置。"); sys.exit(1)
     threshold_bytes = args.threshold if args.threshold > 0 else parse_size_str(args.size)
-    logger.info(f"仓库路径: {repo_root.absolute()}")
-    logger.info(f"Git程序 : {git_exe}")
-    if args.mode != "init": logger.info(f"文件限制: {threshold_bytes / 1024 / 1024:.2f} MB ({threshold_bytes} 字节)")
+    logger.info(f"仓库路径: {repo_root.absolute()}"); logger.info(f"Git程序: {git_exe}")
+    if args.mode != "init": logger.info(f"文件限制: {threshold_bytes/1024/1024:.2f} MB ({threshold_bytes} 字节)")
     if remote_url: logger.info(f"远程地址: {remote_url}")
-    logger.info(f"分支    : {args.branch}")
+    logger.info(f"分支: {args.branch}")
     try:
         if args.mode == "init":
             logger.info("===== 执行 git init =====")
-            run_shell(git_exe, ["init"]); run_shell(git_exe, ["remote", "remove", "origin"]); run_shell(git_exe, ["remote", "add", "origin", remote_url])
+            run_shell(git_exe, ["init"]); run_shell(git_exe, ["remote", "remove", "origin"])
+            run_shell(git_exe, ["remote", "add", "origin", remote_url])
             logger.info("✅ 初始化完成！"); return
         if args.mode in ("list-big", "listbig"):
             git_list_big(git_exe, threshold_bytes); return
         if args.mode in ("remove-big", "filter-repo"):
             target_hashes = [h.strip() for h in args.hashes.split(",") if h.strip()] if args.hashes else None
-            git_remove_big(git_exe, threshold_bytes, target_hashes=target_hashes)
+            git_remove_big(git_exe, threshold_bytes, target_hashes)
             if remote_url: set_remote(git_exe, remote_url); logger.info("✅ 远程地址已重新绑定。")
             return
         large_files = scan_large_files(repo_root, threshold_bytes)
         has_large = len(large_files) > 0
-        logger.info(f"扫描到 {len(large_files)} 个本地超过阈值的文件")
-        lfs_needed = has_large
+        logger.info(f"扫描到 {len(large_files)} 个本地大文件")
         lfs_available = check_lfs_available(git_exe)
-        if lfs_needed and not lfs_available:
+        if has_large and not lfs_available:
             if not install_lfs(): sys.exit(1)
-            if not check_lfs_available(git_exe): logger.critical("Git LFS 安装后仍然不可用，请检查环境。"); sys.exit(1)
+            if not check_lfs_available(git_exe): logger.critical("Git LFS 安装后仍不可用"); sys.exit(1)
             lfs_available = True
-        if lfs_needed or lfs_available:
-            if is_lfs_initialized(repo_root): logger.info("Git LFS hooks 已初始化，跳过 git lfs install")
-            elif not init_lfs(git_exe): sys.exit(1)
-        if lfs_needed: clean_and_apply_lfs(git_exe, repo_root, large_files)
+        if has_large or lfs_available:
+            if not is_lfs_initialized(repo_root):
+                if not init_lfs(git_exe): sys.exit(1)
+            else: logger.info("LFS hooks 已初始化")
+        if has_large: clean_and_apply_lfs(git_exe, repo_root, large_files)
         if remote_url: set_remote(git_exe, remote_url)
         if args.mode == "pull": git_pull(git_exe, args.branch, extra, remote_url)
         elif args.mode == "push": git_push(git_exe, args.branch, repo_root, extra, args.commit_msg, remote_url, args.user, args.retry)
         logger.info("✅ 操作结束！")
     except KeyboardInterrupt:
-        logger.warning("\n[CANCEL] 用户手动终止程序。"); sys.exit(130)
+        logger.warning("\n[CANCEL] 用户手动终止。"); sys.exit(130)
 
 if __name__ == "__main__":
     main()
