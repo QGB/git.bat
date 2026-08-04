@@ -269,8 +269,8 @@ def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
             try: sz = fp.stat().st_size
             except OSError: continue
             if sz > max_size: max_size = sz; max_file = rel.replace("\\", "/")
-        tag = Path(__file__).name if '__file__' in dir() else 'git-auto-lfs'
-        commit_msg = f"{tag} auto update [{max_file} {max_size}B] {stime()}" if max_file else f"{tag} auto update {stime()}"
+        
+        commit_msg =__file__[-20:]+ f" auto [{max_file} {max_size}B] {stime()}" if max_file else f" auto {stime()}"
     if changed_files:
         logger.info(f"变更文件: {len(changed_files)} 个" + (f" (显示前10: {changed_files[:10]})" if len(changed_files) > 10 else f" {changed_files}"))
         for f in changed_files:
