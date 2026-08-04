@@ -258,7 +258,7 @@ def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
             try: fsize = path.stat().st_size
             except OSError: continue
             if fsize > max_size: max_size = fsize; max_file = str(path.relative_to(repo_root)).replace("\\", "/")
-        commit_msg = f'auto update [max: {max_file} ({max_size} bytes)] {stime()}' if max_file else f'auto update {stime()}'
+        commit_msg =__file__[-20:]+ f'auto update [{max_file} ({max_size} B)] {stime()}' if max_file else f'auto update {stime()}'
     logger.info(f"当前工作目录: {repo_root.resolve()}")
     if not (repo_root / ".git").exists():
         logger.info("检测到当前目录尚未初始化 Git 仓库，自动执行 git init...")
