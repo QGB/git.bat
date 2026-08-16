@@ -246,6 +246,7 @@ def apply_git_user_config(git_bin: str, remote_url: str, user_arg: str):
             logger.info(f"✅ 更新仓库配置: user.name={remote_user}, user.email={new_email}")
         else: logger.info("保持原配置不变。")
 
+
 def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
              commit_msg: str = "", remote_url: str = "",
              user_arg: str = None, retry_count: int = 10, retry_seconds=5):
@@ -256,7 +257,9 @@ def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
         run_shell(git_bin, ["init"])
         if remote_url: run_shell(git_bin, ["remote", "add", "origin", remote_url])
     apply_git_user_config(git_bin, remote_url, user_arg)
-    if run_shell(git_bin, ["add", "-A"]).returncode != 0: logger.error("git add 失败"); sys.exit(1)
+    if run_shell(git_bin, ["add", "-A"]).returncode != 0:
+        logger.error("git add 失败")
+        sys.exit(1)
     result = subprocess.run([git_bin, "status", "--porcelain"], capture_output=True, text=True)
     changed_files = []
     if result.returncode == 0 and result.stdout.strip():
@@ -265,47 +268,89 @@ def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
         max_file, max_size = None, -1
         for rel in changed_files:
             fp = repo_root / rel
-            if not fp.is_file(): continue
-            try: sz = fp.stat().st_size
-            except OSError: continue
-            if sz > max_size: max_size = sz; max_file = rel.replace("\\", "/")
-        
-        commit_msg =__file__[-20:]+ f" auto [{max_file} {max_size}B] {stime()}" if max_file else f" auto {stime()}"
+            if not fp.is_file():
+                continue
+            try:
+                sz = fp.stat().st_size
+            except OSError:
+                continue
+            if sz > max_size:
+                max_size = sz
+                max_file = rel.replace("\\", "/")
+
+        commit_msg = __file__[-20:] + (f" auto [{max_file} {max_size}B] {stime()}" if max_file else f" auto {stime()}")
     if changed_files:
         logger.info(f"变更文件: {len(changed_files)} 个" + (f" (显示前10: {changed_files[:10]})" if len(changed_files) > 10 else f" {changed_files}"))
         for f in changed_files:
             if f == "ReadMe.md":
                 with open(repo_root / "ReadMe.md", 'rb') as fh:
-                    if b'#EmptyAfterPush' in fh.read(): EmptyAfterPush = True
-        if run_shell(git_bin, ["commit", "-m", commit_msg]).returncode != 0: logger.error("git commit 失败"); sys.exit(1)
-    else: logger.info("暂存区为空")
+                    if b'#EmptyAfterPush' in fh.read():
+                        EmptyAfterPush = True
+        if run_shell(git_bin, ["commit", "-m", commit_msg]).returncode != 0:
+            logger.error("git commit 失败")
+            sys.exit(1)
+    else:
+        logger.info("暂存区为空")
+
     is_debug = logger.getEffectiveLevel() <= logging.DEBUG
     cmd_args = ["push", "-v", "--progress"] + extra_args + [remote_url, branch]
     for attempt in range(1, retry_count + 1):
         logger.info(f"===== 推送 {remote_url} {branch} (尝试 {attempt}/{retry_count}) 间隔 {retry_seconds}s =====")
         extra_env = {}
         if is_debug or attempt > 1:
-            extra_env["GIT_CURL_VERBOSE"] = "1"; extra_env["GIT_TRACE"] = "1"
-            if attempt > 1: logger.info("🔍 启用详细连接日志")
+            extra_env["GIT_CURL_VERBOSE"] = "1"
+            extra_env["GIT_TRACE"] = "1"
+            if attempt > 1:
+                logger.info("🔍 启用详细连接日志")
         try:
             push_res = run_shell(git_bin, cmd_args, realtime=True, extra_env=extra_env)
             if push_res.returncode == 0:
                 if EmptyAfterPush:
-                    with open(repo_root / 'ReadMe.md', 'wb') as f: f.write(b'')
+                    with open(repo_root / 'ReadMe.md', 'wb') as f:
+                        f.write(b'')
                     logger.info(f"EmptyAfterPush 成功 {stime()}")
-                logger.info(f"✅ 推送成功 {stime()}"); break
+                logger.info(f"✅ 推送成功 {stime()}")
+                break
             else:
                 eout = push_res.stdout or ""
-                net_kw = ["Could not read from remote repository","ssh: connect to host","Connection timed out",
-                          "The remote end hung up unexpectedly","fatal: unable to access","Failed to connect to",
-                          "Network is unreachable","remote: fatal:"]
-                auth_kw = ["HTTP 401","HTTP 403","fatal: Authentication failed","Permission denied (publickey)"]
-                is_net = any(k in eout for k in net_kw); is_auth = any(k in eout for k in auth_kw)
-                if is_net and not is_auth: logger.warning(f"⚠️ 网络错误，稍后重试 (返回码: {push_res.returncode})")
-                else: logger.error(f"❌ 推送失败 (返回码: {push_res.returncode})"); sys.exit(1)
-        except Exception as e: logger.warning(f"⚠️ 异常: {repr(e)}，重试")
-        if attempt < retry_count: time.sleep(retry_seconds)
-        else: logger.error(f"❌ 达到最大重试次数 {retry_count}"); sys.exit(1)
+                eout_l = eout.lower()
+                net_kw = [
+                    "could not read from remote repository",
+                    "ssh: connect to host",
+                    "connection timed out",
+                    "the remote end hung up unexpectedly",
+                    "fatal: unable to access",
+                    "failed to connect to",
+                    "network is unreachable",
+                    "remote: fatal:",
+                    "dial tcp",
+                    "connectex",
+                    "a connection attempt failed",
+                    "connected party did not properly respond",
+                    "connected host has failed to respond"
+                ]
+                auth_kw = [
+                    "http 401",
+                    "http 403",
+                    "fatal: authentication failed",
+                    "permission denied (publickey)"
+                ]
+                is_net = any(k in eout_l for k in net_kw)
+                is_auth = any(k in eout_l for k in auth_kw)
+
+                if is_net and not is_auth:
+                    logger.warning(f"⚠️ 网络错误，稍后重试 (返回码: {push_res.returncode})")
+                else:
+                    logger.error(f"❌ 推送失败 (返回码: {push_res.returncode})")
+                    sys.exit(1)
+        except Exception as e:
+            logger.warning(f"⚠️ 异常: {repr(e)}，重试")
+
+        if attempt < retry_count:
+            time.sleep(retry_seconds)
+        else:
+            logger.error(f"❌ 达到最大重试次数 {retry_count}")
+            sys.exit(1)
         
 def git_list_big(git_bin: str, threshold_bytes: int) -> list[tuple[int, str, str]]:
     logger.info(f"===== 扫描历史大文件 >= {threshold_bytes/1024/1024:.2f} MB =====")
