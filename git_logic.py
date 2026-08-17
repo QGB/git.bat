@@ -28,14 +28,6 @@ def kill_process_tree(pid: int, proc: subprocess.Popen = None):
 
 def looks_like_url(s: str) -> bool: return s.startswith("https://") or s.startswith("git@") or "://" in s
 
-def parse_url_info(url: str):
-    parsed = urlparse(url)
-    if "@" in parsed.netloc:
-        auth, host = parsed.netloc.split("@", 1)
-        remote_url = urlunparse(parsed._replace(netloc=f"{auth}@{host}"))
-    else: remote_url = url
-    return remote_url, auth, parsed.path.lstrip("/")
-
 def parse_size_str(val: str) -> int:
     if not val: return 104857600
     s = str(val).strip().lower()
@@ -48,7 +40,7 @@ def parse_size_str(val: str) -> int:
     except ValueError: return 104857600
 
 def preprocess_args():
-    valid_modes = {"push", "pull", "init", "list-big", "listbig", "remove-big", "filter-repo"}
+    valid_modes = {"push", "pull", "init", "list-big", "listbig", "remove-big"}
     raw = sys.argv[1:]
     url_indices = {i for i, arg in enumerate(raw) if looks_like_url(arg)}
     new, need_auto_user, i = [], False, 0
@@ -198,6 +190,8 @@ def clean_and_apply_lfs(git_bin: str, repo_root: Path, large_patterns: set[str])
     logger.info(f".gitattributes 更新完成，LFS追踪总数: {len(lfs_lines)}")
 
 def git_pull(git_bin: str, branch: str, extra_args: list[str], remote_url: str = ""):
+    ''' #TODO 网络重试逻辑只在 git_push 内部实现
+git pull没有重试循环，网络抖动直接退出。 应该封装通用重试逻辑  '''
     logger.info(f"===== 开始执行 git pull {remote_url} {branch} =====")
     if run_shell(git_bin, ["pull", "--progress"] + extra_args + [remote_url, branch], realtime=True).returncode != 0:
         logger.error("git pull 失败！"); sys.exit(1)
@@ -406,7 +400,13 @@ def git_remove_big(git_bin: str, threshold_bytes: int, target_hashes: list[str] 
     )
     res = run_shell(git_bin, ["filter-repo", "--blob-callback", callback_code, "--force"], realtime=True)
     if res.returncode == 0:
-        logger.info("✅ 历史大文件 Blob 已擦除（之前 Commit 保留未动）")
+        msg=rf'''
+filter‑repo 重写历史后，旧对象还在本地 git 库，磁盘空间不会立刻释放，需要手动：
+git reflog expire --expire=now --all
+git gc --prune=now --aggressive
+✅ 历史大文件 Blob 已擦除 （ {hashes_to_remove} 之前 Commit 保留未动）
+'''
+        logger.info(msg)
         logger.warning("⚠️ 历史已重写，推送需使用 --force")
     else: logger.error("❌ 清理失败"); sys.exit(1)
 
@@ -426,13 +426,13 @@ def main():
     parser.add_argument("--user", "-u", nargs="?", const="AUTO", default=None, help="自动配置 Git 用户")
     parser.add_argument("--retry", "-r", type=int, default=10, help="Push 失败重试次数")
     parser.add_argument("--verbose", "-v", type=int, default=2, help="日志级别: 0=Error, 1=Warn, 2=Info, 3=Debug")
-    parser.add_argument("mode", choices=["push", "pull", "init", "list-big", "listbig", "remove-big", "filter-repo"])
+    parser.add_argument("mode", choices=["push", "pull", "init", "list-big", "listbig", "remove-big"])
     args, extra = parser.parse_known_args()
     setup_logging(args.verbose)
     git_exe = find_git(args.git)
     repo_root = Path.cwd()
     remote_url = args.remote or get_origin_url(git_exe) or get_branch_tracking_url(git_exe, args.branch)
-    if not remote_url and args.mode not in ("list-big", "listbig", "remove-big", "filter-repo"):
+    if not remote_url and args.mode not in ("list-big", "listbig", "remove-big"):
         logger.critical("未提供远程仓库地址，且未找到 origin/tracking 配置。"); sys.exit(1)
     threshold_bytes = args.threshold if args.threshold > 0 else parse_size_str(args.size)
     logger.info(f"仓库路径: {repo_root.absolute()}"); logger.info(f"Git程序: {git_exe}")
@@ -447,7 +447,7 @@ def main():
             logger.info("✅ 初始化完成！"); return
         if args.mode in ("list-big", "listbig"):
             git_list_big(git_exe, threshold_bytes); return
-        if args.mode in ("remove-big", "filter-repo"):
+        if args.mode == "remove-big":
             target_hashes = [h.strip() for h in args.hashes.split(",") if h.strip()] if args.hashes else None
             git_remove_big(git_exe, threshold_bytes, target_hashes)
             if remote_url: set_remote(git_exe, remote_url); logger.info("✅ 远程地址已重新绑定。")
