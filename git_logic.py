@@ -46,6 +46,15 @@ def preprocess_args():
     new, need_auto_user, i = [], False, 0
     while i < len(raw):
         arg = raw[i]
+        if arg in ("-m", "--commit-msg", "--commit_msg"):
+            msg_parts = raw[i+1:]
+            if msg_parts:
+                new.append("--commit-msg")
+                new.append(" ".join(msg_parts))
+            else:
+                new.append(arg)
+            i = len(raw)
+            continue
         if arg in ("-u", "--user"):
             if i + 1 < len(raw):
                 nxt = raw[i + 1]
