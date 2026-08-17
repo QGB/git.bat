@@ -40,7 +40,7 @@ def parse_size_str(val: str) -> int:
     except ValueError: return 104857600
 
 def preprocess_args():
-    valid_modes = {"push", "pull", "init", "list-big", "listbig", "remove-big"}
+    valid_modes = {"push", "pull", "init", "list-big", "listbig", "remove-big", "undo"}
     raw = sys.argv[1:]
     url_indices = {i for i, arg in enumerate(raw) if looks_like_url(arg)}
     new, need_auto_user, i = [], False, 0
@@ -435,13 +435,13 @@ def main():
     parser.add_argument("--user", "-u", nargs="?", const="AUTO", default=None, help="自动配置 Git 用户")
     parser.add_argument("--retry", "-r", type=int, default=10, help="Push 失败重试次数")
     parser.add_argument("--verbose", "-v", type=int, default=2, help="日志级别: 0=Error, 1=Warn, 2=Info, 3=Debug")
-    parser.add_argument("mode", choices=["push", "pull", "init", "list-big", "listbig", "remove-big"])
+    parser.add_argument("mode", choices=["push", "pull", "init", "list-big", "listbig", "remove-big", "undo"])
     args, extra = parser.parse_known_args()
     setup_logging(args.verbose)
     git_exe = find_git(args.git)
     repo_root = Path.cwd()
     remote_url = args.remote or get_origin_url(git_exe) or get_branch_tracking_url(git_exe, args.branch)
-    if not remote_url and args.mode not in ("list-big", "listbig", "remove-big"):
+    if not remote_url and args.mode not in ("list-big", "listbig", "remove-big", "undo"):
         logger.critical("未提供远程仓库地址，且未找到 origin/tracking 配置。"); sys.exit(1)
     threshold_bytes = args.threshold if args.threshold > 0 else parse_size_str(args.size)
     logger.info(f"仓库路径: {repo_root.absolute()}"); logger.info(f"Git程序: {git_exe}")
@@ -449,6 +449,12 @@ def main():
     if remote_url: logger.info(f"远程地址: {remote_url}")
     logger.info(f"分支: {args.branch}")
     try:
+        if args.mode == "undo":
+            logger.info("===== 撤销上一次提交 =====")
+            run_shell(git_exe, ["reset", "--soft", "HEAD~1"])
+            run_shell(git_exe, ["reset", "HEAD", "."])
+            logger.info("✅ 撤销完成，工作区文件未改动。")
+            return
         if args.mode == "init":
             logger.info("===== 执行 git init =====")
             run_shell(git_exe, ["init"]); run_shell(git_exe, ["remote", "remove", "origin"])
