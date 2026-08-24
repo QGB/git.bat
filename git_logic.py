@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import argparse, logging, os, platform, shutil, subprocess, sys, time
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
@@ -281,7 +282,7 @@ def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
                 max_size = sz
                 max_file = rel.replace("\\", "/")
 
-        commit_msg = __file__[-20:] + (f" auto [{max_file} {max_size}B] {stime()}" if max_file else f" auto {stime()}")
+        commit_msg = (f"[{max_file} {max_size}B] {stime()} {__file__[-20:]} auto" if max_file else f" auto {stime()}")
     if changed_files:
         logger.info(f"变更文件: {len(changed_files)} 个" + (f" (显示前10: {changed_files[:10]})" if len(changed_files) > 10 else f" {changed_files}"))
         for f in changed_files:
@@ -413,7 +414,7 @@ def git_remove_big(git_bin: str, threshold_bytes: int, target_hashes: list[str] 
 filter‑repo 重写历史后，旧对象还在本地 git 库，磁盘空间不会立刻释放，需要手动：
 git reflog expire --expire=now --all
 git gc --prune=now --aggressive
-✅ 历史大文件 Blob 已擦除 （ {hashes_to_remove} 之前 Commit 保留未动）
+✅ 历史大文件 Blob 已擦除 （ 之前 Commit 保留未动）
 '''
         logger.info(msg)
         logger.warning("⚠️ 历史已重写，推送需使用 --force")
