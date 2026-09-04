@@ -360,7 +360,7 @@ def parse_github_subdirectory_url(remote_url: str) -> tuple[str, str | None, str
 
 def scan_large_files(repo_root: Path, threshold: int) -> set[str]:
     large_files = set()
-    skip_dirs = {".git", "build", "dist", "__pycache__"}
+    skip_dirs = {".git", "dist", "__pycache__"}
     for path in repo_root.rglob("*"):
         if any(part in skip_dirs for part in path.parts) or not path.is_file():
             continue
