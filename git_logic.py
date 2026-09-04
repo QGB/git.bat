@@ -271,6 +271,42 @@ def renormalize_lfs(git_bin: str, repo_root: Path) -> bool:
         return False
     return True
 
+def verify_staged_lfs_files(git_bin: str, repo_root: Path) -> bool:
+    """Fail before push if a staged LFS-matched file is still a large blob."""
+    attrs_result = subprocess.run(
+        [git_bin, "diff", "--cached", "--name-only"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+    )
+    if attrs_result.returncode != 0:
+        return True
+    invalid_files = []
+    for path in (line.strip() for line in attrs_result.stdout.splitlines() if line.strip()):
+        attr_result = subprocess.run(
+            [git_bin, "check-attr", "filter", "--", path],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+        )
+        if not attr_result.stdout.rstrip().endswith(": lfs"):
+            continue
+        blob_result = subprocess.run(
+            [git_bin, "cat-file", "blob", f":{path}"],
+            cwd=repo_root,
+            capture_output=True,
+        )
+        if blob_result.returncode == 0 and not blob_result.stdout.startswith(
+                b"version https://git-lfs.github.com/spec/v1\n"):
+            invalid_files.append(path)
+    if invalid_files:
+        logger.error("以下暂存文件匹配 LFS 规则，但仍是普通 Git Blob: "
+                     f"{invalid_files}")
+        logger.error("已阻止提交，请执行 git lfs install --local，"
+                     "再执行 git add --renormalize . && git add -A。")
+        return False
+    return True
+
 
 def install_git_filter_repo(git_bin: str) -> bool:
     """Install git-filter-repo with the same Python used to run this tool."""
@@ -635,6 +671,14 @@ def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
     if run_shell(git_bin, ["add", "-A"]).returncode != 0:
         logger.error("git add 失败")
         sys.exit(1)
+    if (repo_root / ".gitattributes").is_file():
+        if not renormalize_lfs(git_bin, repo_root):
+            sys.exit(1)
+        if run_shell(git_bin, ["add", "-A"]).returncode != 0:
+            logger.error("重新暂存 LFS 文件失败")
+            sys.exit(1)
+        if not verify_staged_lfs_files(git_bin, repo_root):
+            sys.exit(1)
     status_result = subprocess.run([git_bin, "status", "--porcelain"], capture_output=True, text=True)
     changed_files = []
     if status_result.returncode == 0 and status_result.stdout.strip():
