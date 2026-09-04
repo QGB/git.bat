@@ -252,10 +252,22 @@ def install_lfs() -> bool:
     return False
 
 
-def init_lfs(git_bin: str) -> bool:
-    logger.info("执行 git lfs install 初始化...")
-    if run_shell(git_bin, ["lfs", "install"]).returncode != 0:
+def init_lfs(git_bin: str, repo_root: Path = None) -> bool:
+    logger.info("执行 git lfs install 初始化仓库过滤器...")
+    lfs_args = ["lfs", "install"]
+    if repo_root:
+        lfs_args.append("--local")
+    if run_shell(git_bin, lfs_args, cwd=repo_root).returncode != 0:
         logger.error("Git LFS 初始化失败！")
+        return False
+    return True
+
+
+def renormalize_lfs(git_bin: str, repo_root: Path) -> bool:
+    """Re-clean tracked files after adding or changing LFS attributes."""
+    logger.info("执行 Git LFS 重新规范化，确保已跟踪大文件转换为 LFS 指针...")
+    if run_shell(git_bin, ["add", "--renormalize", "."], cwd=repo_root).returncode != 0:
+        logger.error("Git LFS 重新规范化失败！")
         return False
     return True
 
@@ -872,12 +884,11 @@ def main():
                 if not check_lfs_available(git_exe):
                     logger.critical("Git LFS 安装后仍不可用")
                     sys.exit(1)
-            if not is_lfs_initialized(repo_root):
-                if not init_lfs(git_exe):
-                    sys.exit(1)
-            else:
-                logger.info("LFS hooks 已初始化")
+            if not init_lfs(git_exe, repo_root):
+                sys.exit(1)
             clean_and_apply_lfs(git_exe, repo_root, large_files)
+            if not renormalize_lfs(git_exe, repo_root):
+                sys.exit(1)
         if remote_url:
             set_remote(git_exe, remote_url)
         if args.mode == "pull":
