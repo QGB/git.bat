@@ -9,3 +9,5 @@
 但是如果 push第一次 失败，retry时候 自动调高输出级别 显示详情
 
 commit_msg auto模式下 加入  最大size 修改的文件名。
+
+使用 `git.bat clone <远程仓库地址> [目标目录]` 克隆仓库。工具会自动检查并安装 Git LFS，克隆完成后执行 `git lfs pull`，恢复仓库中的 LFS 大文件。

@@ -40,6 +40,15 @@ def looks_like_url(s: str) -> bool:
     return s.startswith("https://") or s.startswith("git@") or "://" in s
 
 
+def redact_url(value: str) -> str:
+    parsed = urlparse(value)
+    if parsed.scheme and parsed.netloc and "@" in parsed.netloc:
+        userinfo, host = parsed.netloc.rsplit("@", 1)
+        username = userinfo.split(":", 1)[0]
+        return urlunparse(parsed._replace(netloc=f"{username}:***@{host}"))
+    return value
+
+
 def parse_size_str(val: str) -> int:
     if not val:
         return 104857600
@@ -63,7 +72,7 @@ def parse_size_str(val: str) -> int:
 
 
 def preprocess_args():
-    valid_modes = {"push", "pull", "init", "list-big", "listbig", "remove-big", "undo"}
+    valid_modes = {"push", "pull", "clone", "config", "init", "list-big", "listbig", "remove-big", "undo"}
     raw = sys.argv[1:]
     url_indices = {i for i, arg in enumerate(raw) if looks_like_url(arg)}
     new, need_auto_user, i = [], False, 0
@@ -149,7 +158,8 @@ def get_branch_tracking_url(git_bin: str, branch: str) -> str:
     return ""
 
 
-def run_shell(git_bin: str, args: list[str], realtime: bool = False, extra_env: dict = None) -> subprocess.CompletedProcess:
+def run_shell(git_bin: str, args: list[str], realtime: bool = False, extra_env: dict = None,
+              cwd: Path = None) -> subprocess.CompletedProcess:
     cmd = [git_bin] + args
     git_exe_path = Path(git_bin).resolve()
     git_bin_dir = git_exe_path.parent
@@ -165,11 +175,11 @@ def run_shell(git_bin: str, args: list[str], realtime: bool = False, extra_env: 
     if extra_env:
         env.update(extra_env)
 
-    logger.info(f"▶ RUN: {' '.join(cmd)}")
+    logger.info(f"▶ RUN: {' '.join(redact_url(arg) for arg in cmd)}")
     proc = None
     try:
         if realtime:
-            proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            proc = subprocess.Popen(cmd, env=env, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                     text=True, encoding="utf-8", errors="replace", bufsize=1)
             output_chunks = []
             for char in iter(lambda: proc.stdout.read(1), ''):
@@ -179,7 +189,7 @@ def run_shell(git_bin: str, args: list[str], realtime: bool = False, extra_env: 
             retcode = proc.wait()
             return subprocess.CompletedProcess(cmd, retcode, stdout=''.join(output_chunks), stderr='')
         else:
-            proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            proc = subprocess.Popen(cmd, env=env, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     text=True, encoding="utf-8", errors="replace")
             stdout, stderr = proc.communicate()
             if stdout and stdout.strip():
@@ -306,7 +316,7 @@ def git_pull(git_bin: str, branch: str, extra_args: list[str], remote_url: str =
              connect_timeout: int = 45, low_speed_limit: int = 1000, low_speed_time: int = 30):
     ''' #TODO 网络重试逻辑只在 git_push 内部实现
 git pull没有重试循环，网络抖动直接退出。 应该封装通用重试逻辑  '''
-    logger.info(f"===== 开始执行 git pull {remote_url} {branch} =====")
+    logger.info(f"===== 开始执行 git pull {redact_url(remote_url)} {branch} =====")
     git_config_args = [
         "-c", f"http.connectTimeout={connect_timeout}",
         "-c", f"http.lowSpeedLimit={low_speed_limit}",
@@ -318,6 +328,77 @@ git pull没有重试循环，网络抖动直接退出。 应该封装通用重�
         sys.exit(1)
     logger.info("===== 开始执行 git lfs pull =====")
     run_shell(git_bin, ["lfs", "pull"], realtime=True)
+
+
+def git_clone(git_bin: str, branch: str, remote_url: str, extra_args: list[str],
+              connect_timeout: int = 45, low_speed_limit: int = 1000,
+              low_speed_time: int = 30):
+    """Clone a repository and download its LFS objects into the clone directory."""
+    if not remote_url:
+        logger.error("clone 缺少远程仓库地址。")
+        sys.exit(1)
+
+    git_config_args = [
+        "-c", f"http.connectTimeout={connect_timeout}",
+        "-c", f"http.lowSpeedLimit={low_speed_limit}",
+        "-c", f"http.lowSpeedTime={low_speed_time}"
+    ]
+    clone_args = git_config_args + ["clone", "--progress"]
+    if branch and "--branch" not in extra_args and "-b" not in extra_args:
+        clone_args.extend(["--branch", branch])
+    clone_options = list(extra_args)
+    value_options = {
+        "-b", "--branch", "-o", "--origin", "-c", "--config", "--depth",
+        "--shallow-since", "--shallow-exclude", "--reference", "--reference-if-able",
+        "--dissociate", "--separate-git-dir", "--template", "--upload-pack"
+    }
+    positional = [
+        arg for index, arg in enumerate(clone_options)
+        if not arg.startswith("-") and (index == 0 or clone_options[index - 1] not in value_options)
+    ]
+    destination = None
+    if positional:
+        destination = Path(positional[-1])
+        for index in range(len(clone_options) - 1, -1, -1):
+            if clone_options[index] == str(destination):
+                clone_options.pop(index)
+                break
+    clone_args.extend(clone_options + [remote_url])
+    if destination is None:
+        repo_name = remote_url.rstrip("/").rsplit("/", 1)[-1]
+        if ":" in repo_name and not remote_url.startswith(("http://", "https://")):
+            repo_name = repo_name.rsplit(":", 1)[-1]
+        destination = Path(repo_name.removesuffix(".git"))
+    clone_args.append(str(destination))
+    logger.info(f"===== 开始执行 git clone {redact_url(remote_url)} =====")
+    if run_shell(git_bin, clone_args, realtime=True, extra_env={"GIT_LFS_SKIP_SMUDGE": "1"}).returncode != 0:
+        logger.error("git clone 失败！")
+        sys.exit(1)
+
+    if not destination.is_absolute():
+        destination = Path.cwd() / destination
+
+    attr_path = destination / ".gitattributes"
+    has_lfs_rules = attr_path.is_file() and "filter=lfs" in attr_path.read_text(encoding="utf-8", errors="ignore")
+    if not has_lfs_rules:
+        logger.info("未发现 Git LFS 追踪规则，跳过大文件恢复。")
+        return
+    if not check_lfs_available(git_bin):
+        if not install_lfs() or not check_lfs_available(git_bin):
+            logger.error("克隆 LFS 仓库需要 Git LFS，但自动安装失败。")
+            sys.exit(1)
+    logger.info(f"===== 开始恢复 Git LFS 大文件: {destination} =====")
+    show_lfs_progress = logger.getEffectiveLevel() <= logging.INFO
+    lfs_env = {}
+    if show_lfs_progress:
+        lfs_env["GIT_LFS_FORCE_PROGRESS"] = "1"
+    lfs_args = ["lfs", "pull"]
+    if logger.getEffectiveLevel() <= logging.DEBUG:
+        lfs_env.update({"GIT_CURL_VERBOSE": "1", "GIT_TRACE": "1", "GIT_TRANSFER_TRACE": "1"})
+    if run_shell(git_bin, git_config_args + lfs_args, realtime=show_lfs_progress,
+                 extra_env=lfs_env, cwd=destination).returncode != 0:
+        logger.error("Git LFS 大文件恢复失败！")
+        sys.exit(1)
 
 
 def extract_remote_user_from_url(remote_url: str) -> str | None:
@@ -436,7 +517,7 @@ def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
     cmd_args = git_config_args + ["push", "-v", "--progress"] + extra_args + [remote_url, branch]
 
     for attempt in range(1, retry_count + 1):
-        logger.info(f"===== 推送 {remote_url} {branch} (尝试 {attempt}/{retry_count}) 间隔 {retry_seconds}s =====")
+        logger.info(f"===== 推送 {redact_url(remote_url)} {branch} (尝试 {attempt}/{retry_count}) 间隔 {retry_seconds}s =====")
         extra_env = {}
         if is_debug or attempt > 1:
             extra_env["GIT_CURL_VERBOSE"] = "1"
@@ -595,7 +676,7 @@ def main():
                         help="传输低速阈值（字节/秒），低于该值持续指定时间则断开")
     parser.add_argument("--low-speed-time", type=int, default=60,
                         help="低速持续超时时间（秒）")
-    parser.add_argument("mode", choices=["push", "pull", "init", "list-big", "listbig", "remove-big", "undo"])
+    parser.add_argument("mode", choices=["push", "pull", "clone", "config", "init", "list-big", "listbig", "remove-big", "undo"])
     args, extra = parser.parse_known_args()
 
     setup_logging(args.verbose)
@@ -611,11 +692,23 @@ def main():
     if args.mode != "init":
         logger.info(f"文件限制: {threshold_bytes / 1024 / 1024:.2f} MB ({threshold_bytes} 字节)")
     if remote_url:
-        logger.info(f"远程地址: {remote_url}")
+        logger.info(f"远程地址: {redact_url(remote_url)}")
     logger.info(f"分支: {args.branch}")
     logger.info(f"连接超时: {args.connect_timeout}s | 低速阈值: {args.low_speed_limit}B/s | 低速超时: {args.low_speed_time}s")
 
     try:
+        if args.mode == "config":
+            logger.info("===== 根据远程 URL 配置当前仓库用户 =====")
+            apply_git_user_config(git_exe, remote_url, "AUTO")
+            logger.info("✅ 当前仓库用户配置完成！")
+            return
+        if args.mode == "clone":
+            git_clone(git_exe, args.branch, remote_url, extra,
+                      connect_timeout=args.connect_timeout,
+                      low_speed_limit=args.low_speed_limit,
+                      low_speed_time=args.low_speed_time)
+            logger.info("✅ clone 及 LFS 大文件恢复完成！")
+            return
         if args.mode == "undo":
             logger.info("===== 撤销上一次提交 =====")
             run_shell(git_exe, ["reset", "--soft", "HEAD~1"])
