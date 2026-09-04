@@ -612,10 +612,30 @@ def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
     if run_shell(git_bin, ["add", "-A"]).returncode != 0:
         logger.error("git add 失败")
         sys.exit(1)
-    result = subprocess.run([git_bin, "status", "--porcelain"], capture_output=True, text=True)
+    status_result = subprocess.run([git_bin, "status", "--porcelain"], capture_output=True, text=True)
     changed_files = []
-    if result.returncode == 0 and result.stdout.strip():
-        changed_files = [line[3:].strip() for line in result.stdout.strip().split("\n") if line[3:].strip()]
+    if status_result.returncode == 0 and status_result.stdout.strip():
+        changed_files = [line[3:].strip() for line in status_result.stdout.strip().split("\n") if line[3:].strip()]
+    submodule_result = subprocess.run([git_bin, "ls-files", "--stage"], capture_output=True, text=True)
+    submodule_paths = {
+        line.split("\t", 1)[1].strip()
+        for line in submodule_result.stdout.splitlines()
+        if line.startswith("160000 ") and "\t" in line
+    }
+    staged_result = subprocess.run([git_bin, "diff", "--cached", "--name-only"], capture_output=True, text=True)
+    staged_files = []
+    if staged_result.returncode == 0 and staged_result.stdout.strip():
+        staged_files = [line.strip() for line in staged_result.stdout.splitlines() if line.strip()]
+    if not staged_files:
+        submodule_changes = [path for path in changed_files
+                             if path in submodule_paths or any(path.startswith(f"{item}/") for item in submodule_paths)]
+        if submodule_changes:
+            logger.warning("检测到子模块内部有未提交修改，但父仓库没有可提交的暂存内容: "
+                           f"{submodule_changes}")
+            logger.warning("请进入子模块单独提交，或在父仓库提交子模块更新后的 gitlink。")
+        changed_files = []
+    else:
+        changed_files = staged_files
     if not commit_msg:
         max_file, max_size = None, -1
         for rel in changed_files:
@@ -639,8 +659,10 @@ def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
                 with open(repo_root / "ReadMe.md", 'rb') as fh:
                     if b'#EmptyAfterPush' in fh.read():
                         EmptyAfterPush = True
-        if run_shell(git_bin, ["commit", "-m", commit_msg]).returncode != 0:
-            logger.error("git commit 失败")
+        commit_result = run_shell(git_bin, ["commit", "-m", commit_msg])
+        if commit_result.returncode != 0:
+            logger.error(f"git commit 失败，返回码: {commit_result.returncode}")
+            logger.error("请查看上方 Git 输出；可执行 git status 和 git diff --cached 进一步确认暂存内容。")
             sys.exit(1)
     else:
         logger.info("暂存区为空")
