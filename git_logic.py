@@ -376,6 +376,11 @@ def run_network_retry(git_bin: str, cmd_args: list[str], operation: str, remote_
         "fatal: authentication failed",
         "permission denied (publickey)",
     ]
+    history_large_file_kw = [
+        "gh001: large files detected",
+        "exceeds github's file size limit",
+        "exceeds github's file size limit of 100.00 mb",
+    ]
     for attempt in range(1, retry_count + 1):
         logger.info(f"===== {operation} {redact_url(remote_url)} {branch} "
                     f"(尝试 {attempt}/{retry_count}) 间隔 {retry_seconds}s =====")
@@ -389,6 +394,12 @@ def run_network_retry(git_bin: str, cmd_args: list[str], operation: str, remote_
             if result.returncode == 0:
                 return result
             output = (result.stdout or "").lower()
+            if any(keyword in output for keyword in history_large_file_kw):
+                logger.error("❌ GitHub 拒绝了历史中的大文件，当前工作区扫描不到并不代表历史对象已清除。")
+                logger.error("请先执行 ./git.py list-big，确认 Blob；再执行 ./git.py remove-big，"
+                             "完成历史改写后使用 git push --force 推送。")
+                logger.error("如果希望保留这些文件，请先配置 Git LFS 并迁移历史，而不是只新增 .gitattributes。")
+                sys.exit(1)
             is_net = any(keyword in output for keyword in net_kw)
             is_auth = any(keyword in output for keyword in auth_kw)
             if is_net and not is_auth:
