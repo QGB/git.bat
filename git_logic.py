@@ -326,20 +326,74 @@ def clean_and_apply_lfs(git_bin: str, repo_root: Path, large_patterns: set[str])
     logger.info(f".gitattributes 更新完成，LFS追踪总数: {len(lfs_lines)}")
 
 
+def run_network_retry(git_bin: str, cmd_args: list[str], operation: str, remote_url: str,
+                      branch: str, retry_count: int = 10, retry_seconds: int = 5,
+                      is_debug: bool = False, cwd: Path = None):
+    net_kw = [
+        "could not read from remote repository",
+        "ssh: connect to host",
+        "connection timed out",
+        "the remote end hung up unexpectedly",
+        "fatal: unable to access",
+        "failed to connect to",
+        "network is unreachable",
+        "remote: fatal:",
+        "dial tcp",
+        "connectex",
+        "a connection attempt failed",
+        "connected party did not properly respond",
+        "connected host has failed to respond",
+        "curl 28",
+        "rpc failed",
+        "expected flush after ref listing",
+        "connection was reset",
+    ]
+    auth_kw = [
+        "http 401",
+        "http 403",
+        "fatal: authentication failed",
+        "permission denied (publickey)",
+    ]
+    for attempt in range(1, retry_count + 1):
+        logger.info(f"===== {operation} {redact_url(remote_url)} {branch} "
+                    f"(尝试 {attempt}/{retry_count}) 间隔 {retry_seconds}s =====")
+        extra_env = {}
+        if is_debug or attempt > 1:
+            extra_env.update({"GIT_CURL_VERBOSE": "1", "GIT_TRACE": "1"})
+            if attempt > 1:
+                logger.info("🔍 启用详细连接日志")
+        try:
+            result = run_shell(git_bin, cmd_args, realtime=True, extra_env=extra_env, cwd=cwd)
+            if result.returncode == 0:
+                return result
+            output = (result.stdout or "").lower()
+            is_net = any(keyword in output for keyword in net_kw)
+            is_auth = any(keyword in output for keyword in auth_kw)
+            if is_net and not is_auth:
+                logger.warning(f"⚠️ 网络错误，稍后重试 (返回码: {result.returncode})")
+            else:
+                logger.error(f"❌ {operation}失败 (返回码: {result.returncode})")
+                sys.exit(1)
+        except Exception as exc:
+            logger.warning(f"⚠️ 异常: {repr(exc)}，重试")
+        if attempt < retry_count:
+            time.sleep(retry_seconds)
+        else:
+            logger.error(f"❌ {operation}达到最大重试次数 {retry_count}")
+            sys.exit(1)
+
+
 def git_pull(git_bin: str, branch: str, extra_args: list[str], remote_url: str = "",
-             connect_timeout: int = 45, low_speed_limit: int = 1000, low_speed_time: int = 30):
-    ''' #TODO 网络重试逻辑只在 git_push 内部实现
-git pull没有重试循环，网络抖动直接退出。 应该封装通用重试逻辑  '''
-    logger.info(f"===== 开始执行 git pull {redact_url(remote_url)} {branch} =====")
+             connect_timeout: int = 45, low_speed_limit: int = 1000, low_speed_time: int = 30,
+             retry_count: int = 10, retry_seconds: int = 5):
     git_config_args = [
         "-c", f"http.connectTimeout={connect_timeout}",
         "-c", f"http.lowSpeedLimit={low_speed_limit}",
         "-c", f"http.lowSpeedTime={low_speed_time}"
     ]
-    if run_shell(git_bin, git_config_args + ["pull", "--progress"] + extra_args + [remote_url, branch],
-                 realtime=True).returncode != 0:
-        logger.error("git pull 失败！")
-        sys.exit(1)
+    pull_args = git_config_args + ["pull", "--progress"] + extra_args + [remote_url, branch]
+    run_network_retry(git_bin, pull_args, "拉取", remote_url, branch, retry_count, retry_seconds,
+                      logger.getEffectiveLevel() <= logging.DEBUG)
     logger.info("===== 开始执行 git lfs pull =====")
     run_shell(git_bin, ["lfs", "pull"], realtime=True)
 
@@ -578,61 +632,13 @@ def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
     ]
     cmd_args = git_config_args + ["push", "-v", "--progress"] + extra_args + [remote_url, branch]
 
-    for attempt in range(1, retry_count + 1):
-        logger.info(f"===== 推送 {redact_url(remote_url)} {branch} (尝试 {attempt}/{retry_count}) 间隔 {retry_seconds}s =====")
-        extra_env = {}
-        if is_debug or attempt > 1:
-            extra_env["GIT_CURL_VERBOSE"] = "1"
-            extra_env["GIT_TRACE"] = "1"
-            if attempt > 1:
-                logger.info("🔍 启用详细连接日志")
-        try:
-            push_res = run_shell(git_bin, cmd_args, realtime=True, extra_env=extra_env)
-            if push_res.returncode == 0:
-                if EmptyAfterPush:
-                    with open(repo_root / 'ReadMe.md', 'wb') as f:
-                        f.write(b'')
-                    logger.info(f"EmptyAfterPush 成功 {stime()}")
-                logger.info(f"✅ 推送成功 {stime()}")
-                break
-            else:
-                eout = push_res.stdout or ""
-                eout_l = eout.lower()
-                net_kw = [
-                    "could not read from remote repository",
-                    "ssh: connect to host",
-                    "connection timed out",
-                    "the remote end hung up unexpectedly",
-                    "fatal: unable to access",
-                    "failed to connect to",
-                    "network is unreachable",
-                    "remote: fatal:",
-                    "dial tcp",
-                    "connectex",
-                    "a connection attempt failed",
-                    "connected party did not properly respond",
-                    "connected host has failed to respond"
-                ]
-                auth_kw = [
-                    "http 401",
-                    "http 403",
-                    "fatal: authentication failed",
-                    "permission denied (publickey)"
-                ]
-                is_net = any(k in eout_l for k in net_kw)
-                is_auth = any(k in eout_l for k in auth_kw)
-                if is_net and not is_auth:
-                    logger.warning(f"⚠️ 网络错误，稍后重试 (返回码: {push_res.returncode})")
-                else:
-                    logger.error(f"❌ 推送失败 (返回码: {push_res.returncode})")
-                    sys.exit(1)
-        except Exception as e:
-            logger.warning(f"⚠️ 异常: {repr(e)}，重试")
-        if attempt < retry_count:
-            time.sleep(retry_seconds)
-        else:
-            logger.error(f"❌ 达到最大重试次数 {retry_count}")
-            sys.exit(1)
+    run_network_retry(git_bin, cmd_args, "推送", remote_url, branch,
+                      retry_count, retry_seconds, is_debug)
+    if EmptyAfterPush:
+        with open(repo_root / 'ReadMe.md', 'wb') as f:
+            f.write(b'')
+        logger.info(f"EmptyAfterPush 成功 {stime()}")
+    logger.info(f"✅ 推送成功 {stime()}")
 
 
 def git_list_big(git_bin: str, threshold_bytes: int) -> list[tuple[int, str, str]]:
@@ -820,6 +826,7 @@ def main():
             set_remote(git_exe, remote_url)
         if args.mode == "pull":
             git_pull(git_exe, args.branch, extra, remote_url,
+                     retry_count=args.retry,
                      connect_timeout=args.connect_timeout,
                      low_speed_limit=args.low_speed_limit,
                      low_speed_time=args.low_speed_time)
