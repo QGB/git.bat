@@ -333,7 +333,7 @@ git pull没有重试循环，网络抖动直接退出。 应该封装通用重�
 def git_clone(git_bin: str, branch: str, remote_url: str, extra_args: list[str],
               connect_timeout: int = 45, low_speed_limit: int = 1000,
               low_speed_time: int = 30):
-    """Clone a repository and download its LFS objects into the clone directory."""
+    """Clone or resume a repository and download its LFS objects."""
     if not remote_url:
         logger.error("clone 缺少远程仓库地址。")
         sys.exit(1)
@@ -370,13 +370,37 @@ def git_clone(git_bin: str, branch: str, remote_url: str, extra_args: list[str],
             repo_name = repo_name.rsplit(":", 1)[-1]
         destination = Path(repo_name.removesuffix(".git"))
     clone_args.append(str(destination))
-    logger.info(f"===== 开始执行 git clone {redact_url(remote_url)} =====")
-    if run_shell(git_bin, clone_args, realtime=True, extra_env={"GIT_LFS_SKIP_SMUDGE": "1"}).returncode != 0:
-        logger.error("git clone 失败！")
-        sys.exit(1)
-
     if not destination.is_absolute():
         destination = Path.cwd() / destination
+
+    if destination.exists() and any(destination.iterdir()):
+        if not (destination / ".git").exists():
+            logger.error(f"目标目录已存在且不是 Git 仓库，拒绝覆盖: {destination}")
+            sys.exit(1)
+        logger.info(f"===== 检测到未完成的仓库，开始从远程恢复: {destination} =====")
+        if run_shell(git_bin, ["remote", "set-url", "origin", remote_url], cwd=destination).returncode != 0:
+            logger.error("更新 origin 地址失败！")
+            sys.exit(1)
+        fetch_args = git_config_args + ["fetch", "--prune", "origin", branch]
+        if run_shell(git_bin, fetch_args, realtime=True, cwd=destination).returncode != 0:
+            logger.error("获取远程最新提交失败！")
+            sys.exit(1)
+        if run_shell(git_bin, ["checkout", "-B", branch, f"origin/{branch}"], realtime=True,
+                     extra_env={"GIT_LFS_SKIP_SMUDGE": "1"}, cwd=destination).returncode != 0:
+            logger.error("切换到远程分支失败！")
+            sys.exit(1)
+        if run_shell(git_bin, ["reset", "--hard", f"origin/{branch}"],
+                     extra_env={"GIT_LFS_SKIP_SMUDGE": "1"}, cwd=destination).returncode != 0:
+            logger.error("同步工作树到远程最新版本失败！")
+            sys.exit(1)
+        if run_shell(git_bin, ["clean", "-fdx"], cwd=destination).returncode != 0:
+            logger.error("清理未完成克隆残留失败！")
+            sys.exit(1)
+    else:
+        logger.info(f"===== 开始执行 git clone {redact_url(remote_url)} =====")
+        if run_shell(git_bin, clone_args, realtime=True, extra_env={"GIT_LFS_SKIP_SMUDGE": "1"}).returncode != 0:
+            logger.error("git clone 失败！")
+            sys.exit(1)
 
     attr_path = destination / ".gitattributes"
     has_lfs_rules = attr_path.is_file() and "filter=lfs" in attr_path.read_text(encoding="utf-8", errors="ignore")
