@@ -115,6 +115,9 @@ def run_ssh_connect(key_path, target="git@ssh.github.com"):
     subprocess.run(cmd)
 
 if __name__ == "__main__":
+    print(r'''
+GIT_SSH_COMMAND="ssh -i ~/.ssh/NIST256p.pem"  ./git_logic.py push git@ssh.github.com:QGB/git.bat 
+    ''')
     expr = sys.argv[1]
     secexp_val = eval(expr)
     pem_file = generate_deterministic_keys(secexp=secexp_val)
