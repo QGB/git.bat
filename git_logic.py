@@ -260,6 +260,28 @@ def init_lfs(git_bin: str) -> bool:
     return True
 
 
+def install_git_filter_repo(git_bin: str) -> bool:
+    """Install git-filter-repo with the same Python used to run this tool."""
+    logger.info("未检测到 git-filter-repo，尝试使用清华源自动安装...")
+    command = [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "-i",
+        "https://pypi.tuna.tsinghua.edu.cn/simple",
+        "--trusted-host",
+        "pypi.tuna.tsinghua.edu.cn",
+        "git-filter-repo",
+    ]
+    try:
+        subprocess.check_call(command)
+    except (OSError, subprocess.CalledProcessError) as error:
+        logger.error(f"git-filter-repo 自动安装失败: {error}")
+        return False
+    return run_shell(git_bin, ["filter-repo", "--version"]).returncode == 0
+
+
 def set_remote(git_bin: str, remote_url: str):
     if not remote_url:
         return
@@ -679,8 +701,9 @@ def git_remove_big(git_bin: str, threshold_bytes: int, target_hashes: list[str] 
     logger.info("===== 准备清理历史大文件 =====")
     logger.info("🛡️ 仅移除指定 Blob 及其关联 Commit，更早的历史哈希保持不变。\n")
     if run_shell(git_bin, ["filter-repo", "--version"]).returncode != 0:
-        logger.error("未检测到 git-filter-repo，请先安装：pip install git-filter-repo")
-        sys.exit(1)
+        if not install_git_filter_repo(git_bin):
+            logger.error("请手动安装：pip install -i https://pypi.tuna.tsinghua.edu.cn/simple git-filter-repo")
+            sys.exit(1)
     hashes_to_remove = set()
     if target_hashes:
         for h in target_hashes:
