@@ -281,6 +281,9 @@ def init_lfs(git_bin: str, repo_root: Path = None) -> bool:
 def renormalize_lfs(git_bin: str, repo_root: Path) -> bool:
     """Re-clean tracked files after adding or changing LFS attributes."""
     logger.info("执行 Git LFS 重新规范化，确保已跟踪大文件转换为 LFS 指针...")
+    if run_shell(git_bin, ["add", "-A"], cwd=repo_root).returncode != 0:
+        logger.error("清理已删除文件的暂存状态失败！")
+        return False
     if run_shell(git_bin, ["add", "--renormalize", "."], cwd=repo_root).returncode != 0:
         logger.error("Git LFS 重新规范化失败！")
         return False
@@ -683,7 +686,7 @@ def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
         if remote_url:
             run_shell(git_bin, ["remote", "add", "origin", remote_url])
     apply_git_user_config(git_bin, remote_url, user_arg)
-    if run_shell(git_bin, ["add", "-A"]).returncode != 0:
+    if run_shell(git_bin, ["add", "-A"], cwd=repo_root).returncode != 0:
         logger.error("git add 失败")
         sys.exit(1)
     if (repo_root / ".gitattributes").is_file():
