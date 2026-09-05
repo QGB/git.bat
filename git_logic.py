@@ -142,6 +142,21 @@ def get_origin_url(git_bin: str) -> str:
     return ""
 
 
+def get_current_branch(git_bin: str) -> str:
+    """Return the current branch, including an unborn branch after git init."""
+    try:
+        result = subprocess.run(
+            [git_bin, "symbolic-ref", "--quiet", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except OSError:
+        pass
+    return ""
+
+
 def get_branch_tracking_url(git_bin: str, branch: str) -> str:
     try:
         remote_name = subprocess.run([git_bin, "config", "--get", f"branch.{branch}.remote"],
@@ -836,10 +851,10 @@ git gc --prune=now --aggressive
 def main():
     sys.argv = preprocess_args()
     default_git = os.environ.get("GIT_PATH", "git")
-    default_branch = os.environ.get("BRANCH", "master")
+    configured_branch = os.environ.get("BRANCH")
     parser = argparse.ArgumentParser(description="Git Auto LFS Tool")
     parser.add_argument("--git", default=default_git, help="git 可执行文件路径")
-    parser.add_argument("--branch", '-b', default=default_branch, help="分支名称")
+    parser.add_argument("--branch", '-b', default=configured_branch, help="分支名称")
     parser.add_argument("--size", '-s', default="100mb", help="大文件大小限制（默认 100mb）")
     parser.add_argument("--threshold", type=int, default=0, help="字节数阈值（兼容）")
     parser.add_argument("--hashes", "--hash", default="", help="手动指定 Blob Hash，逗号分隔")
@@ -862,6 +877,8 @@ def main():
     setup_logging(args.verbose)
     git_exe = find_git(args.git)
     repo_root = Path.cwd()
+    if not args.branch and args.mode in ("push", "pull"):
+        args.branch = get_current_branch(git_exe) or "main"
     remote_url = args.remote or get_origin_url(git_exe) or get_branch_tracking_url(git_exe, args.branch)
     clone_branch = args.branch
     clone_subdirectory = None

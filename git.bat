@@ -5,7 +5,7 @@ cd /d "%~dp0"
 :: ===== 基础配置（可按需修改） =====
 set "PY_PATH=C:\QGB\miniforge3\python.exe"
 set "GIT_PATH=C:\QGB\PortableGit\bin\git.exe"
-set "BRANCH=master"
+rem Leave BRANCH unset so git_logic.py follows the repository's current branch.
 set "SIZE_THRESHOLD=104857600"
 :: ==================================
 
