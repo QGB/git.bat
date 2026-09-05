@@ -557,7 +557,7 @@ def git_clone(git_bin: str, branch: str, remote_url: str, extra_args: list[str],
             logger.error(f"目标目录已是其他 Git 仓库，无法复用: {destination}")
             sys.exit(1)
         logger.info(f"===== 复用已有仓库，仅检出项目子目录: {destination / sparse_path} =====")
-        if run_shell(git_bin, ["sparse-checkout", "set", "--cone", sparse_path], cwd=destination).returncode != 0:
+        if run_shell(git_bin, ["sparse-checkout", "set", "--no-cone", f"/{sparse_path.strip('/')}/"], cwd=destination).returncode != 0:
             logger.error("设置 sparse-checkout 子目录失败！")
             sys.exit(1)
     elif destination.exists() and any(destination.iterdir()):
@@ -589,12 +589,32 @@ def git_clone(git_bin: str, branch: str, remote_url: str, extra_args: list[str],
             logger.error("git clone 失败！")
             sys.exit(1)
 
-        if sparse_path and run_shell(git_bin, ["sparse-checkout", "set", "--cone", sparse_path], cwd=destination).returncode != 0:
+        if sparse_path and run_shell(git_bin, ["sparse-checkout", "set", "--no-cone", f"/{sparse_path.strip('/')}/"], cwd=destination).returncode != 0:
             logger.error("设置 sparse-checkout 子目录失败！")
             sys.exit(1)
 
+    if sparse_path:
+        selected_path = destination.joinpath(*sparse_path.strip("/").split("/"))
+        if not selected_path.is_dir():
+            logger.error(f"远程仓库中不存在子目录: {sparse_path}")
+            sys.exit(1)
+        for child in selected_path.iterdir():
+            target = destination / child.name
+            if target.exists():
+                logger.error(f"子目录内容与目标目录冲突: {target}")
+                sys.exit(1)
+            shutil.move(str(child), str(target))
+        shutil.rmtree(selected_path)
+        for parent in selected_path.parents:
+            if parent == destination:
+                break
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+
     attr_path = destination / ".gitattributes"
-    has_lfs_rules = attr_path.is_file() and "filter=lfs" in attr_path.read_text(encoding="utf-8", errors="ignore")
+    has_lfs_rules = sparse_path or (attr_path.is_file() and "filter=lfs" in attr_path.read_text(encoding="utf-8", errors="ignore"))
     if not has_lfs_rules:
         logger.info("未发现 Git LFS 追踪规则，跳过大文件恢复。")
         return
