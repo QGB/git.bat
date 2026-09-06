@@ -73,25 +73,38 @@ def parse_size_str(val: str) -> int:
 
 def preprocess_args():
     valid_modes = {"push", "pull", "clone", "config", "init", "list-big", "listbig", "remove-big", "undo"}
+    no_ask_aliases = {"--no-ask", "-y", "-yes", "noask"}
     raw = sys.argv[1:]
     url_indices = {i for i, arg in enumerate(raw) if looks_like_url(arg)}
     new, need_auto_user, i = [], False, 0
     while i < len(raw):
         arg = raw[i]
         if arg in ("-m", "--commit-msg", "--commit_msg"):
-            msg_parts = raw[i + 1:]
+            msg_parts = []
+            j = i + 1
+            while j < len(raw) and raw[j] not in no_ask_aliases:
+                msg_parts.append(raw[j])
+                j += 1
             if msg_parts:
                 new.append("--commit-msg")
                 new.append(" ".join(msg_parts))
             else:
                 new.append(arg)
-            i = len(raw)
+            i = j
+            continue
+        if arg == "noask":
+            new.append("--no-ask")
+            i += 1
             continue
         if arg in ("-u", "--user"):
             if i + 1 < len(raw):
                 nxt = raw[i + 1]
                 if (i + 1) in url_indices:
                     new.extend(["--user", "--remote", nxt])
+                    i += 2
+                    continue
+                elif nxt in no_ask_aliases:
+                    new.extend(["--user", "--no-ask"])
                     i += 2
                     continue
                 elif nxt in valid_modes or nxt.startswith("-"):
@@ -668,7 +681,7 @@ def extract_remote_user_from_url(remote_url: str) -> str | None:
     return path_parts[0] if path_parts else None
 
 
-def apply_git_user_config(git_bin: str, remote_url: str, user_arg: str):
+def apply_git_user_config(git_bin: str, remote_url: str, user_arg: str, no_ask: bool = False):
     if not remote_url:
         return
     remote_user = extract_remote_user_from_url(remote_url)
@@ -683,6 +696,9 @@ def apply_git_user_config(git_bin: str, remote_url: str, user_arg: str):
         run_shell(git_bin, ["config", "user.email", target_email])
         return
     if not remote_user:
+        return
+    if no_ask:
+        logger.info("非交互模式：保留当前 Git 用户配置。")
         return
     local_name = subprocess.run([git_bin, "config", "user.name"], capture_output=True, text=True).stdout.strip()
     local_email = subprocess.run([git_bin, "config", "user.email"], capture_output=True, text=True).stdout.strip()
@@ -709,13 +725,14 @@ def apply_git_user_config(git_bin: str, remote_url: str, user_arg: str):
 def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
              commit_msg: str = "", remote_url: str = "",
              user_arg: str = None, retry_count: int = 10, retry_seconds=5,
-             connect_timeout: int = 45, low_speed_limit: int = 1000, low_speed_time: int = 30):
+             connect_timeout: int = 45, low_speed_limit: int = 1000, low_speed_time: int = 30,
+             no_ask: bool = False):
     EmptyAfterPush = False
     logger.info(f"当前工作目录: {repo_root.resolve()}")
     if not is_git_repository(git_bin, repo_root):
         logger.error("当前目录尚未初始化 Git 仓库。")
         sys.exit(1)
-    apply_git_user_config(git_bin, remote_url, user_arg)
+    apply_git_user_config(git_bin, remote_url, user_arg, no_ask)
     realtime = logger.getEffectiveLevel() <= logging.DEBUG
     if run_shell(git_bin, ["add", "-A", "--verbose"], realtime=realtime, cwd=repo_root).returncode != 0:
         logger.error("git add 失败")
@@ -895,6 +912,8 @@ def main():
     parser.add_argument("--remote", default="", help="完整远程 URL")
     parser.add_argument("--commit-msg", "--commit_msg", '-m', default="", help="自定义 commit 消息")
     parser.add_argument("--user", "-u", nargs="?", const="AUTO", default=None, help="自动配置 Git 用户")
+    parser.add_argument("--no-ask", "-y", "-yes", dest="no_ask", action="store_true",
+                        help="非交互模式：自动确认初始化并跳过用户配置询问")
     parser.add_argument("--retry", "-r", type=int, default=10, help="Push 失败重试次数")
     parser.add_argument("--verbose", "-v", type=int, default=2,
                         help="日志级别: 0=Error, 1=Warn, 2=Info, 3=Debug")
@@ -913,10 +932,12 @@ def main():
     repo_root = Path.cwd()
     if args.mode == "push" and not is_git_repository(git_exe, repo_root):
         logger.warning("当前目录尚未初始化 Git 仓库。")
-        try:
-            choice = input("是否执行 git init 初始化当前目录？[Y/n]: ").strip().lower()
-        except KeyboardInterrupt:
-            sys.exit(130)
+        choice = "yes" if args.no_ask else ""
+        if not args.no_ask:
+            try:
+                choice = input("是否执行 git init 初始化当前目录？[Y/n]: ").strip().lower()
+            except KeyboardInterrupt:
+                sys.exit(130)
         if choice not in ("", "y", "yes"):
             logger.info("已取消初始化，操作终止。")
             return
@@ -948,7 +969,7 @@ def main():
     try:
         if args.mode == "config":
             logger.info("===== 根据远程 URL 配置当前仓库用户 =====")
-            apply_git_user_config(git_exe, remote_url, "AUTO")
+            apply_git_user_config(git_exe, remote_url, "AUTO", args.no_ask)
             logger.info("✅ 当前仓库用户配置完成！")
             return
         if args.mode == "clone":
@@ -1009,7 +1030,8 @@ def main():
                      args.user, args.retry,
                      connect_timeout=args.connect_timeout,
                      low_speed_limit=args.low_speed_limit,
-                     low_speed_time=args.low_speed_time)
+                     low_speed_time=args.low_speed_time,
+                     no_ask=args.no_ask)
         logger.info("✅ 操作结束！")
     except KeyboardInterrupt:
         logger.warning("\n[CANCEL] 用户手动终止。")
