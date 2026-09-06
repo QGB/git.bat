@@ -80,17 +80,13 @@ def preprocess_args():
     while i < len(raw):
         arg = raw[i]
         if arg in ("-m", "--commit-msg", "--commit_msg"):
-            msg_parts = []
-            j = i + 1
-            while j < len(raw) and raw[j] not in no_ask_aliases:
-                msg_parts.append(raw[j])
-                j += 1
+            msg_parts = raw[i + 1:]
             if msg_parts:
                 new.append("--commit-msg")
                 new.append(" ".join(msg_parts))
             else:
                 new.append(arg)
-            i = j
+            i = len(raw)
             continue
         if arg == "noask":
             new.append("--no-ask")
