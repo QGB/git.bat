@@ -157,6 +157,16 @@ def get_current_branch(git_bin: str) -> str:
     return ""
 
 
+def is_git_repository(git_bin: str, repo_root: Path) -> bool:
+    result = subprocess.run(
+        [git_bin, "rev-parse", "--git-dir"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
+
+
 def get_branch_tracking_url(git_bin: str, branch: str) -> str:
     try:
         remote_name = subprocess.run([git_bin, "config", "--get", f"branch.{branch}.remote"],
@@ -281,10 +291,12 @@ def init_lfs(git_bin: str, repo_root: Path = None) -> bool:
 def renormalize_lfs(git_bin: str, repo_root: Path) -> bool:
     """Re-clean tracked files after adding or changing LFS attributes."""
     logger.info("执行 Git LFS 重新规范化，确保已跟踪大文件转换为 LFS 指针...")
-    if run_shell(git_bin, ["add", "-A"], cwd=repo_root).returncode != 0:
+    realtime = logger.getEffectiveLevel() <= logging.DEBUG
+    if run_shell(git_bin, ["add", "-A", "--verbose"], realtime=realtime, cwd=repo_root).returncode != 0:
         logger.error("清理已删除文件的暂存状态失败！")
         return False
-    if run_shell(git_bin, ["add", "--renormalize", "."], cwd=repo_root).returncode != 0:
+    if run_shell(git_bin, ["add", "--renormalize", "--verbose", "."], realtime=realtime,
+                 cwd=repo_root).returncode != 0:
         logger.error("Git LFS 重新规范化失败！")
         return False
     return True
@@ -700,19 +712,18 @@ def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
              connect_timeout: int = 45, low_speed_limit: int = 1000, low_speed_time: int = 30):
     EmptyAfterPush = False
     logger.info(f"当前工作目录: {repo_root.resolve()}")
-    if not (repo_root / ".git").exists():
-        logger.info("检测到当前目录尚未初始化 Git 仓库，自动执行 git init...")
-        run_shell(git_bin, ["init"])
-        if remote_url:
-            run_shell(git_bin, ["remote", "add", "origin", remote_url])
+    if not is_git_repository(git_bin, repo_root):
+        logger.error("当前目录尚未初始化 Git 仓库。")
+        sys.exit(1)
     apply_git_user_config(git_bin, remote_url, user_arg)
-    if run_shell(git_bin, ["add", "-A"], cwd=repo_root).returncode != 0:
+    realtime = logger.getEffectiveLevel() <= logging.DEBUG
+    if run_shell(git_bin, ["add", "-A", "--verbose"], realtime=realtime, cwd=repo_root).returncode != 0:
         logger.error("git add 失败")
         sys.exit(1)
     if (repo_root / ".gitattributes").is_file():
         if not renormalize_lfs(git_bin, repo_root):
             sys.exit(1)
-        if run_shell(git_bin, ["add", "-A"]).returncode != 0:
+        if run_shell(git_bin, ["add", "-A", "--verbose"], realtime=realtime, cwd=repo_root).returncode != 0:
             logger.error("重新暂存 LFS 文件失败")
             sys.exit(1)
         if not verify_staged_lfs_files(git_bin, repo_root):
@@ -900,6 +911,18 @@ def main():
     setup_logging(args.verbose)
     git_exe = find_git(args.git)
     repo_root = Path.cwd()
+    if args.mode == "push" and not is_git_repository(git_exe, repo_root):
+        logger.warning("当前目录尚未初始化 Git 仓库。")
+        try:
+            choice = input("是否执行 git init 初始化当前目录？[Y/n]: ").strip().lower()
+        except KeyboardInterrupt:
+            sys.exit(130)
+        if choice not in ("", "y", "yes"):
+            logger.info("已取消初始化，操作终止。")
+            return
+        if run_shell(git_exe, ["init"], cwd=repo_root).returncode != 0:
+            logger.error("git init 失败")
+            sys.exit(1)
     if not args.branch and args.mode in ("push", "pull"):
         args.branch = get_current_branch(git_exe) or "main"
     remote_url = args.remote or get_origin_url(git_exe) or get_branch_tracking_url(git_exe, args.branch)
