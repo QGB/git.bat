@@ -4,6 +4,9 @@
 快速运行本地测试：
 
 ```bash
+./test.sh
+
+或者
 python3 -m unittest discover -s tests -v
 ```
 

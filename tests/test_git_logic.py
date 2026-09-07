@@ -80,6 +80,19 @@ class PureFunctionTests(unittest.TestCase):
              "--commit-msg", "hello world", "push"],
         )
 
+    def test_preprocess_args_preserves_explicit_remote_option(self):
+        argv = [
+            "git_logic.py",
+            "--remote",
+            "https://github.com/775cpu/build_xime_home.git",
+            "--branch",
+            "main",
+            "pull",
+        ]
+        with patch.object(sys, "argv", argv):
+            result = git_logic.preprocess_args()
+        self.assertEqual(result, argv)
+
     def test_parse_user_identity_input_supports_defaults_spaces_and_commas(self):
         self.assertEqual(
             git_logic.parse_user_identity_input("1", "old", "old@mail", "remote", "remote@mail"),

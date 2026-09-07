@@ -79,6 +79,14 @@ def preprocess_args():
     new, need_auto_user, i = [], False, 0
     while i < len(raw):
         arg = raw[i]
+        if arg == "--remote":
+            new.append(arg)
+            if i + 1 < len(raw):
+                new.append(raw[i + 1])
+                i += 2
+            else:
+                i += 1
+            continue
         if arg in ("-m", "--commit-msg", "--commit_msg"):
             msg_parts = raw[i + 1:]
             if msg_parts:
