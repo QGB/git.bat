@@ -351,30 +351,66 @@ def renormalize_lfs(git_bin: str, repo_root: Path, paths: set[str] | None = None
 def verify_staged_lfs_files(git_bin: str, repo_root: Path) -> bool:
     """Fail before push if a staged LFS-matched file is still a large blob."""
     attrs_result = subprocess.run(
-        [git_bin, "diff", "--cached", "--name-only"],
+        [git_bin, "diff", "--cached", "--name-only", "-z"],
         cwd=repo_root,
         capture_output=True,
-        text=True,
     )
     if attrs_result.returncode != 0:
         return True
+    staged_paths = [path for path in attrs_result.stdout.split(b"\0") if path]
+    if not staged_paths:
+        return True
+
+    attr_result = subprocess.run(
+        [git_bin, "check-attr", "-z", "filter", "--stdin"],
+        cwd=repo_root,
+        input=b"\0".join(staged_paths) + b"\0",
+        capture_output=True,
+    )
+    if attr_result.returncode != 0:
+        logger.warning("批量检查 Git 属性失败，跳过 LFS Blob 校验。")
+        return True
+
+    # check-attr -z emits path, attribute, and value as NUL-separated fields.
+    attr_fields = attr_result.stdout.split(b"\0")
+    lfs_paths = [
+        attr_fields[index].decode("utf-8", errors="surrogateescape")
+        for index in range(0, len(attr_fields) - 2, 3)
+        if attr_fields[index + 2] == b"lfs"
+    ]
+    if not lfs_paths:
+        return True
+
+    cat_result = subprocess.run(
+        [git_bin, "cat-file", "--batch"],
+        cwd=repo_root,
+        input=b"\n".join(f":{path}".encode("utf-8", errors="surrogateescape") for path in lfs_paths) + b"\n",
+        capture_output=True,
+    )
     invalid_files = []
-    for path in (line.strip() for line in attrs_result.stdout.splitlines() if line.strip()):
-        attr_result = subprocess.run(
-            [git_bin, "check-attr", "filter", "--", path],
-            cwd=repo_root,
-            capture_output=True,
-            text=True,
-        )
-        if not attr_result.stdout.rstrip().endswith(": lfs"):
+    output = cat_result.stdout
+    offset = 0
+    pointer_prefix = b"version https://git-lfs.github.com/spec/v1\n"
+    for path in lfs_paths:
+        header_end = output.find(b"\n", offset)
+        if header_end < 0:
+            invalid_files.append(path)
+            break
+        header = output[offset:header_end].split(b" ")
+        offset = header_end + 1
+        if len(header) != 3 or header[1] != b"blob":
+            invalid_files.append(path)
             continue
-        blob_result = subprocess.run(
-            [git_bin, "cat-file", "blob", f":{path}"],
-            cwd=repo_root,
-            capture_output=True,
-        )
-        if blob_result.returncode == 0 and not blob_result.stdout.startswith(
-                b"version https://git-lfs.github.com/spec/v1\n"):
+        try:
+            blob_size = int(header[2])
+        except ValueError:
+            invalid_files.append(path)
+            continue
+        blob = output[offset:offset + blob_size]
+        offset += blob_size
+        if offset < len(output) and output[offset:offset + 1] == b"\n":
+            offset += 1
+        if not blob.startswith(pointer_prefix):
             invalid_files.append(path)
     if invalid_files:
         logger.error("以下暂存文件匹配 LFS 规则，但仍是普通 Git Blob: "
