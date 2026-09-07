@@ -793,6 +793,26 @@ def extract_remote_user_from_url(remote_url: str) -> str | None:
     return path_parts[0] if path_parts else None
 
 
+def parse_user_identity_input(value: str, current_name: str, current_email: str,
+                              default_name: str, default_email: str) -> tuple[str, str]:
+    """Parse one interactive name/email answer, including numeric defaults."""
+    answer = value.strip()
+    if answer in ("", "1"):
+        return current_name, current_email
+    if answer == "2":
+        return default_name, default_email
+    normalized = answer.replace("，", ",").replace("、", ",")
+    if "," in normalized:
+        name, email = (part.strip() for part in normalized.split(",", 1))
+    else:
+        parts = normalized.split()
+        if len(parts) < 2:
+            name = answer
+            return name, f"{name}@users.noreply.github.com"
+        name, email = " ".join(parts[:-1]), parts[-1]
+    return name or current_name or default_name, email or current_email or default_email
+
+
 def apply_git_user_config(git_bin: str, remote_url: str, user_arg: str, no_ask: bool = False):
     if not remote_url:
         return
@@ -814,24 +834,23 @@ def apply_git_user_config(git_bin: str, remote_url: str, user_arg: str, no_ask: 
         return
     local_name = subprocess.run([git_bin, "config", "user.name"], capture_output=True, text=True).stdout.strip()
     local_email = subprocess.run([git_bin, "config", "user.email"], capture_output=True, text=True).stdout.strip()
-    if local_name != remote_user:
+    default_email = f"{remote_user}@users.noreply.github.com"
+    if local_name != remote_user or local_email != default_email:
         logger.warning("发现当前 Git 用户配置与远程目标不一致！")
-        print(f"\n请选择本次 Commit 使用配置:\n  [1] 保持原样 ({local_name})\n  [2] 更新为目标 ({remote_user})")
+        print(f"\n请输入本次 Commit 的用户名和邮箱：\n"
+              f"  [1] 保持当前 ({local_name}, {local_email})\n"
+              f"  [2] 使用默认 ({remote_user}, {default_email})\n"
+              "  也可直接输入：name mail@example.com 或 name，mail@example.com")
         try:
-            choice = input("请输入 1 或 2 (默认 1): ").strip()
+            identity = input("用户名和邮箱 (默认 1): ")
         except KeyboardInterrupt:
             sys.exit(130)
-        if choice == "2":
-            run_shell(git_bin, ["config", "user.name", remote_user])
-            default_email = f"{remote_user}@users.noreply.github.com"
-            try:
-                new_email = input(f"输入邮箱 (默认: {default_email}): ").strip() or default_email
-            except KeyboardInterrupt:
-                sys.exit(130)
-            run_shell(git_bin, ["config", "user.email", new_email])
-            logger.info(f"✅ 更新仓库配置: user.name={remote_user}, user.email={new_email}")
-        else:
-            logger.info("保持原配置不变。")
+        target_name, target_email = parse_user_identity_input(
+            identity, local_name, local_email, remote_user, default_email
+        )
+        run_shell(git_bin, ["config", "user.name", target_name])
+        run_shell(git_bin, ["config", "user.email", target_email])
+        logger.info(f"✅ 应用本次 Commit 配置: user.name={target_name}, user.email={target_email}")
 
 
 def get_staged_blob_sizes(git_bin: str, repo_root: Path) -> list[tuple[str, int]]:
@@ -945,7 +964,7 @@ def commit_staged_changes(git_bin: str, repo_root: Path, commit_msg: str,
         if add_result.returncode != 0:
             logger.error(f"第 {index}/{len(batches)} 段重新暂存失败！")
             return None
-        part_msg = f"{commit_msg} (part {index}/{len(batches)})"
+        part_msg = f"【{index}/{len(batches)}】文件数：{len(batch)} {commit_msg}"
         if run_shell(git_bin, ["commit", "-m", part_msg], cwd=repo_root).returncode != 0:
             logger.error(f"第 {index}/{len(batches)} 段提交失败！")
             return None

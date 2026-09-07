@@ -80,6 +80,28 @@ class PureFunctionTests(unittest.TestCase):
              "--commit-msg", "hello world", "push"],
         )
 
+    def test_parse_user_identity_input_supports_defaults_spaces_and_commas(self):
+        self.assertEqual(
+            git_logic.parse_user_identity_input("1", "old", "old@mail", "remote", "remote@mail"),
+            ("old", "old@mail"),
+        )
+        self.assertEqual(
+            git_logic.parse_user_identity_input("2", "old", "old@mail", "remote", "remote@mail"),
+            ("remote", "remote@mail"),
+        )
+        self.assertEqual(
+            git_logic.parse_user_identity_input("my name mail@com", "old", "old@mail", "remote", "remote@mail"),
+            ("my name", "mail@com"),
+        )
+        self.assertEqual(
+            git_logic.parse_user_identity_input("my name，mail@com", "old", "old@mail", "remote", "remote@mail"),
+            ("my name", "mail@com"),
+        )
+        self.assertEqual(
+            git_logic.parse_user_identity_input("alice", "old", "old@mail", "remote", "remote@mail"),
+            ("alice", "alice@users.noreply.github.com"),
+        )
+
 
 class ScanAndAttributeTests(unittest.TestCase):
     def test_scan_large_files_skips_symlinks_and_nested_git_repositories(self):
@@ -150,8 +172,16 @@ class StagedBlobAndChunkCommitTests(GitRepositoryTestCase):
 
         self.assertEqual(len(commit_ids), 3)
         messages = self.run_git("log", "--format=%s", "-3").stdout.splitlines()
-        self.assertEqual(messages, ["import (part 3/3)", "import (part 2/3)", "import (part 1/3)"])
+        # 替换原来的 self.assertEqual(messages, [...])
+        expect_marks = ["【3/3】", "【2/3】", "【1/3】"]
+        self.assertEqual(len(messages), len(expect_marks))
+        for msg, mark in zip(messages, expect_marks):
+            with self.subTest(message=msg):
+                self.assertIn(mark, msg)
+                self.assertIn("文件数", msg)
+
         self.assertEqual(self.run_git("status", "--porcelain").stdout, "")
+
 
     def test_commit_staged_changes_keeps_small_commit_as_one_commit(self):
         self.write("small.txt", "small")
