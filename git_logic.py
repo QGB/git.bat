@@ -293,10 +293,49 @@ def init_lfs(git_bin: str, repo_root: Path = None) -> bool:
     return True
 
 
+def remove_stale_index_lock(git_bin: str, repo_root: Path) -> bool:
+    """Remove an abandoned index lock, but never remove one held by Git."""
+    result = subprocess.run(
+        [git_bin, "rev-parse", "--git-path", "index.lock"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return True
+    lock_path = Path(result.stdout.strip())
+    if not lock_path.is_absolute():
+        lock_path = repo_root / lock_path
+    if not lock_path.exists():
+        return True
+
+    fuser = shutil.which("fuser")
+    lsof = shutil.which("lsof")
+    if fuser:
+        holder = subprocess.run([fuser, "-s", str(lock_path)], capture_output=True)
+    elif lsof:
+        holder = subprocess.run([lsof, "-t", "--", str(lock_path)], capture_output=True)
+    else:
+        logger.error("无法确认 Git 索引锁是否被占用，请先手动检查并清理: " + str(lock_path))
+        return False
+    if holder.returncode == 0:
+        logger.error(f"Git 索引锁正在被其他进程使用: {lock_path}")
+        return False
+    try:
+        lock_path.unlink()
+        logger.warning(f"已清理中断后遗留的 Git 索引锁: {lock_path}")
+        return True
+    except OSError as exc:
+        logger.error(f"无法清理 Git 索引锁 {lock_path}: {exc}")
+        return False
+
+
 def renormalize_lfs(git_bin: str, repo_root: Path, paths: set[str] | None = None) -> bool:
     """Re-clean tracked files after adding or changing LFS attributes."""
     logger.info("执行 Git LFS 重新规范化，确保已跟踪大文件转换为 LFS 指针...")
     realtime = logger.getEffectiveLevel() <= logging.DEBUG
+    if not remove_stale_index_lock(git_bin, repo_root):
+        return False
     if run_shell(git_bin, ["add", "-u"], realtime=realtime, cwd=repo_root).returncode != 0:
         logger.error("清理已删除文件的暂存状态失败！")
         return False
@@ -416,11 +455,17 @@ def scan_large_files(repo_root: Path, threshold: int) -> set[str]:
             now = time.monotonic()
             if now - last_report >= 1:
                 display_path = str(path.relative_to(repo_root)).replace("\\", "/")
-                sys.stdout.write(f"\r扫描文件: {scanned_files:,} | 目录: {scanned_dirs:,} | 当前: {display_path}".ljust(120))
+                prefix = f"扫描文件: {scanned_files:,} | 目录: {scanned_dirs:,} | 当前: "
+                width = shutil.get_terminal_size(fallback=(120, 1)).columns
+                available = max(1, width - len(prefix) - 1)
+                if len(display_path) > available:
+                    display_path = "..." + display_path[-max(1, available - 3):]
+                status = prefix + display_path
+                sys.stdout.write("\r\033[2K" + status)
                 sys.stdout.flush()
                 last_report = now
     if scanned_files:
-        sys.stdout.write("\r" + " " * 119 + "\r")
+        sys.stdout.write("\r\033[2K")
         sys.stdout.flush()
     return large_files
 
