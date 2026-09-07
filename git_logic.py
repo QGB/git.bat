@@ -888,7 +888,7 @@ def get_staged_blob_sizes(git_bin: str, repo_root: Path) -> list[tuple[str, int]
         if size.isdigit()
     }
     return [
-        (path, object_sizes.get(index_entries[path], 0))
+        (path, object_sizes.get(index_entries.get(path, ""), 0))
         for path in staged_paths
     ]
 
@@ -901,7 +901,7 @@ def commit_staged_changes(git_bin: str, repo_root: Path, commit_msg: str,
         return None
     total_size = sum(size for _, size in staged)
     if total_size <= max_commit_bytes:
-        if run_shell(git_bin, ["commit", "-m", commit_msg]).returncode != 0:
+        if run_shell(git_bin, ["commit", "-m", commit_msg], cwd=repo_root).returncode != 0:
             return None
         result = subprocess.run([git_bin, "rev-parse", "HEAD"], cwd=repo_root,
                                 capture_output=True, text=True)
@@ -924,6 +924,7 @@ def commit_staged_changes(git_bin: str, repo_root: Path, commit_msg: str,
     if run_shell(git_bin, ["reset", "--", "."], cwd=repo_root).returncode != 0:
         logger.error("拆分提交时清空暂存区失败！")
         return None
+    committed_ids = []
     for index, batch in enumerate(batches, 1):
         try:
             with tempfile.NamedTemporaryFile(prefix="git-pathspec-", mode="wb", delete=False) as path_file:
@@ -948,14 +949,16 @@ def commit_staged_changes(git_bin: str, repo_root: Path, commit_msg: str,
         if run_shell(git_bin, ["commit", "-m", part_msg], cwd=repo_root).returncode != 0:
             logger.error(f"第 {index}/{len(batches)} 段提交失败！")
             return None
+        commit_result = subprocess.run(
+            [git_bin, "rev-parse", "HEAD"], cwd=repo_root,
+            capture_output=True, text=True,
+        )
+        if commit_result.returncode != 0 or not commit_result.stdout.strip():
+            logger.error(f"第 {index}/{len(batches)} 段提交后无法读取提交 ID！")
+            return None
+        committed_ids.append(commit_result.stdout.strip())
         logger.info(f"✅ 已提交第 {index}/{len(batches)} 段，文件数: {len(batch)}")
-    result = subprocess.run(
-        [git_bin, "rev-list", "--reverse", "HEAD", "--not", "HEAD~" + str(len(batches))],
-        cwd=repo_root, capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        return None
-    return [commit for commit in result.stdout.splitlines() if commit]
+    return committed_ids
 
 
 def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],

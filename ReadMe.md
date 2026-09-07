@@ -1,6 +1,12 @@
 
 #todo ？ 2026年8月3日 05点57分
 
+快速运行本地测试：
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
 ✅ stderr 分级日志：正常返回码 stderr 输出 DEBUG，仅非 0 返回码 stderr 标记 ERROR
 附带优化：realtime=True 模式增加进程组捕获，中断时完整清理子进程 
 
