@@ -330,18 +330,19 @@ def remove_stale_index_lock(git_bin: str, repo_root: Path) -> bool:
         return False
 
 
-def renormalize_lfs(git_bin: str, repo_root: Path, paths: set[str] | None = None) -> bool:
+def renormalize_lfs(git_bin: str, repo_root: Path, paths: set[str] | None = None,
+                    cleanup_deleted: bool = True) -> bool:
     """Re-clean tracked files after adding or changing LFS attributes."""
     logger.info("执行 Git LFS 重新规范化，确保已跟踪大文件转换为 LFS 指针...")
     realtime = logger.getEffectiveLevel() <= logging.DEBUG
     if not remove_stale_index_lock(git_bin, repo_root):
         return False
-    if run_shell(git_bin, ["add", "-u"], realtime=realtime, cwd=repo_root).returncode != 0:
+    if cleanup_deleted and run_shell(git_bin, ["add", "-u"], realtime=realtime, cwd=repo_root).returncode != 0:
         logger.error("清理已删除文件的暂存状态失败！")
         return False
     if not paths:
         return True
-    add_args = ["add", "--verbose", "--"] + sorted(paths)
+    add_args = ["add", "--renormalize", "--verbose", "--"] + sorted(paths)
     if run_shell(git_bin, add_args, realtime=realtime, cwd=repo_root).returncode != 0:
         logger.error("Git LFS 重新规范化失败！")
         return False
@@ -780,7 +781,7 @@ def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
              commit_msg: str = "", remote_url: str = "",
              user_arg: str = None, retry_count: int = 10, retry_seconds=5,
              connect_timeout: int = 45, low_speed_limit: int = 1000, low_speed_time: int = 30,
-             no_ask: bool = False):
+             no_ask: bool = False, lfs_paths: set[str] | None = None):
     EmptyAfterPush = False
     logger.info(f"当前工作目录: {repo_root.resolve()}")
     if not is_git_repository(git_bin, repo_root):
@@ -788,8 +789,10 @@ def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
         sys.exit(1)
     apply_git_user_config(git_bin, remote_url, user_arg, no_ask)
     realtime = logger.getEffectiveLevel() <= logging.DEBUG
-    if run_shell(git_bin, ["add", "-A", "--verbose"], realtime=realtime, cwd=repo_root).returncode != 0:
+    if run_shell(git_bin, ["add", "-A", "--verbose"], realtime=True, cwd=repo_root).returncode != 0:
         logger.error("git add 失败")
+        sys.exit(1)
+    if lfs_paths and not renormalize_lfs(git_bin, repo_root, lfs_paths, cleanup_deleted=False):
         sys.exit(1)
     if (repo_root / ".gitattributes").is_file():
         if not verify_staged_lfs_files(git_bin, repo_root):
@@ -1064,8 +1067,6 @@ def main():
             if not init_lfs(git_exe, repo_root):
                 sys.exit(1)
             clean_and_apply_lfs(git_exe, repo_root, large_files)
-            if not renormalize_lfs(git_exe, repo_root, large_files):
-                sys.exit(1)
         if remote_url:
             set_remote(git_exe, remote_url)
         if args.mode == "pull":
@@ -1080,7 +1081,7 @@ def main():
                      connect_timeout=args.connect_timeout,
                      low_speed_limit=args.low_speed_limit,
                      low_speed_time=args.low_speed_time,
-                     no_ask=args.no_ask)
+                     no_ask=args.no_ask, lfs_paths=large_files)
         logger.info("✅ 操作结束！")
     except KeyboardInterrupt:
         logger.warning("\n[CANCEL] 用户手动终止。")
