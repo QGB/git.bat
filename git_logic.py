@@ -73,7 +73,7 @@ def parse_size_str(val: str) -> int:
 
 def preprocess_args():
     valid_modes = {"push", "pull", "clone", "config", "init", "list-big", "listbig", "remove-big", "undo"}
-    no_ask_aliases = {"--no-ask", "-y", "-yes", "noask"}
+    no_ask_aliases = {"--noask", "-noask", "--no-ask", "-y", "-yes"}
     raw = sys.argv[1:]
     url_indices = {i for i, arg in enumerate(raw) if looks_like_url(arg)}
     new, need_auto_user, i = [], False, 0
@@ -87,10 +87,6 @@ def preprocess_args():
             else:
                 new.append(arg)
             i = len(raw)
-            continue
-        if arg == "noask":
-            new.append("--no-ask")
-            i += 1
             continue
         if arg in ("-u", "--user"):
             if i + 1 < len(raw):
@@ -297,15 +293,17 @@ def init_lfs(git_bin: str, repo_root: Path = None) -> bool:
     return True
 
 
-def renormalize_lfs(git_bin: str, repo_root: Path) -> bool:
+def renormalize_lfs(git_bin: str, repo_root: Path, paths: set[str] | None = None) -> bool:
     """Re-clean tracked files after adding or changing LFS attributes."""
     logger.info("执行 Git LFS 重新规范化，确保已跟踪大文件转换为 LFS 指针...")
     realtime = logger.getEffectiveLevel() <= logging.DEBUG
-    if run_shell(git_bin, ["add", "-A", "--verbose"], realtime=True, cwd=repo_root).returncode != 0:
+    if run_shell(git_bin, ["add", "-u"], realtime=realtime, cwd=repo_root).returncode != 0:
         logger.error("清理已删除文件的暂存状态失败！")
         return False
-    if run_shell(git_bin, ["add", "--renormalize", "--verbose", "."], realtime=True,
-                 cwd=repo_root).returncode != 0:
+    if not paths:
+        return True
+    add_args = ["add", "--verbose", "--"] + sorted(paths)
+    if run_shell(git_bin, add_args, realtime=realtime, cwd=repo_root).returncode != 0:
         logger.error("Git LFS 重新规范化失败！")
         return False
     return True
@@ -400,15 +398,30 @@ def parse_github_subdirectory_url(remote_url: str) -> tuple[str, str | None, str
 def scan_large_files(repo_root: Path, threshold: int) -> set[str]:
     large_files = set()
     skip_dirs = {".git", "dist", "__pycache__"}
-    for path in repo_root.rglob("*"):
-        if any(part in skip_dirs for part in path.parts) or not path.is_file():
-            continue
-        try:
-            fsize = path.stat().st_size
-        except OSError:
-            continue
-        if fsize >= threshold:
-            large_files.add(str(path.relative_to(repo_root)).replace("\\", "/"))
+    scanned_files = 0
+    scanned_dirs = 0
+    last_report = time.monotonic()
+    for current_root, dirnames, filenames in os.walk(repo_root, topdown=True, followlinks=False):
+        dirnames[:] = [name for name in dirnames if name not in skip_dirs]
+        scanned_dirs += 1
+        for filename in filenames:
+            path = Path(current_root) / filename
+            scanned_files += 1
+            try:
+                fsize = path.stat().st_size
+            except OSError:
+                continue
+            if fsize >= threshold:
+                large_files.add(str(path.relative_to(repo_root)).replace("\\", "/"))
+            now = time.monotonic()
+            if now - last_report >= 1:
+                display_path = str(path.relative_to(repo_root)).replace("\\", "/")
+                sys.stdout.write(f"\r扫描文件: {scanned_files:,} | 目录: {scanned_dirs:,} | 当前: {display_path}".ljust(120))
+                sys.stdout.flush()
+                last_report = now
+    if scanned_files:
+        sys.stdout.write("\r" + " " * 119 + "\r")
+        sys.stdout.flush()
     return large_files
 
 
@@ -730,15 +743,10 @@ def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
         sys.exit(1)
     apply_git_user_config(git_bin, remote_url, user_arg, no_ask)
     realtime = logger.getEffectiveLevel() <= logging.DEBUG
-    if run_shell(git_bin, ["add", "-A", "--verbose"], realtime=True, cwd=repo_root).returncode != 0:
+    if run_shell(git_bin, ["add", "-A", "--verbose"], realtime=realtime, cwd=repo_root).returncode != 0:
         logger.error("git add 失败")
         sys.exit(1)
     if (repo_root / ".gitattributes").is_file():
-        if not renormalize_lfs(git_bin, repo_root):
-            sys.exit(1)
-        if run_shell(git_bin, ["add", "-A", "--verbose"], realtime=True, cwd=repo_root).returncode != 0:
-            logger.error("重新暂存 LFS 文件失败")
-            sys.exit(1)
         if not verify_staged_lfs_files(git_bin, repo_root):
             sys.exit(1)
     status_result = subprocess.run([git_bin, "status", "--porcelain"], capture_output=True, text=True)
@@ -908,7 +916,7 @@ def main():
     parser.add_argument("--remote", default="", help="完整远程 URL")
     parser.add_argument("--commit-msg", "--commit_msg", '-m', default="", help="自定义 commit 消息")
     parser.add_argument("--user", "-u", nargs="?", const="AUTO", default=None, help="自动配置 Git 用户")
-    parser.add_argument("--no-ask", "-y", "-yes", dest="no_ask", action="store_true",
+    parser.add_argument("--noask", "-noask", "--no-ask", "-y", "-yes", dest="no_ask", action="store_true",
                         help="非交互模式：自动确认初始化并跳过用户配置询问")
     parser.add_argument("--retry", "-r", type=int, default=10, help="Push 失败重试次数")
     parser.add_argument("--verbose", "-v", type=int, default=2,
@@ -1011,7 +1019,7 @@ def main():
             if not init_lfs(git_exe, repo_root):
                 sys.exit(1)
             clean_and_apply_lfs(git_exe, repo_root, large_files)
-            if not renormalize_lfs(git_exe, repo_root):
+            if not renormalize_lfs(git_exe, repo_root, large_files):
                 sys.exit(1)
         if remote_url:
             set_remote(git_exe, remote_url)
