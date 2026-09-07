@@ -18,6 +18,8 @@ def ensure_dependencies():
     packages = {
         "ecdsa": "ecdsa",
         "cryptography": "cryptography",
+        "six": "six",
+        "cffi": "cffi",
     }
     missing = [package for module, package in packages.items()
                if importlib.util.find_spec(module) is None]
