@@ -653,7 +653,10 @@ def git_pull(git_bin: str, branch: str, extra_args: list[str], remote_url: str =
     run_network_retry(git_bin, pull_args, "拉取", remote_url, branch, retry_count, retry_seconds,
                       logger.getEffectiveLevel() <= logging.DEBUG, cwd=repo_root)
     logger.info("===== 开始执行 git lfs pull =====")
-    run_shell(git_bin, ["lfs", "pull"], realtime=True)
+    lfs_env = {}
+    if logger.getEffectiveLevel() <= logging.DEBUG:
+        lfs_env.update({"GIT_CURL_VERBOSE": "1", "GIT_TRACE": "1", "GIT_TRANSFER_TRACE": "1"})
+    run_shell(git_bin, ["lfs", "pull"], realtime=True, extra_env=lfs_env, cwd=repo_root)
 
 
 def git_clone(git_bin: str, branch: str, remote_url: str, extra_args: list[str],

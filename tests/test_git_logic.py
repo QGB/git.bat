@@ -43,6 +43,24 @@ class GitRepositoryTestCase(unittest.TestCase):
 
 
 class PureFunctionTests(unittest.TestCase):
+    def test_git_pull_enables_lfs_trace_in_debug_mode(self):
+        with patch.object(git_logic, "run_network_retry"), \
+                patch.object(git_logic, "run_shell") as run_shell:
+            original_level = git_logic.logger.level
+            git_logic.logger.setLevel(git_logic.logging.DEBUG)
+            try:
+                git_logic.git_pull(
+                    "git", "master", [], "https://example.invalid/repo.git",
+                    retry_count=1, repo_root=Path("/tmp/repository"),
+                )
+            finally:
+                git_logic.logger.setLevel(original_level)
+        run_shell.assert_called_once_with(
+            "git", ["lfs", "pull"], realtime=True,
+            extra_env={"GIT_CURL_VERBOSE": "1", "GIT_TRACE": "1", "GIT_TRANSFER_TRACE": "1"},
+            cwd=Path("/tmp/repository"),
+        )
+
     def test_github_permission_denial_is_not_treated_as_network_error(self):
         result = subprocess.CompletedProcess(
             ["git", "push"],
