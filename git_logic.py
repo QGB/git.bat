@@ -76,7 +76,7 @@ def preprocess_args():
     no_ask_aliases = {"--noask", "-noask", "--no-ask", "-y", "-yes"}
     raw = sys.argv[1:]
     url_indices = {i for i, arg in enumerate(raw) if looks_like_url(arg)}
-    new, need_auto_user, i = [], False, 0
+    new, need_auto_user, missing_value, i = [], False, False, 0
     while i < len(raw):
         arg = raw[i]
         if arg == "--remote":
@@ -94,6 +94,7 @@ def preprocess_args():
                 new.append(" ".join(msg_parts))
             else:
                 new.append(arg)
+                missing_value = True
             i = len(raw)
             continue
         if arg in ("-u", "--user"):
@@ -127,7 +128,7 @@ def preprocess_args():
         i += 1
     if need_auto_user:
         new.append("--user")
-    if not any(a in valid_modes for a in new):
+    if not missing_value and not any(a in valid_modes for a in new):
         new.append("push")
     return [sys.argv[0]] + new
 

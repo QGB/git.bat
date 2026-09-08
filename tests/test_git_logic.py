@@ -142,6 +142,12 @@ class PureFunctionTests(unittest.TestCase):
             result = git_logic.preprocess_args()
         self.assertEqual(result, argv)
 
+    def test_preprocess_args_keeps_empty_commit_message_as_parse_error(self):
+        argv = ["git_logic.py", "https://github.com/acme/demo", "-m"]
+        with patch.object(sys, "argv", argv):
+            result = git_logic.preprocess_args()
+        self.assertEqual(result, ["git_logic.py", "--remote", "https://github.com/acme/demo", "-m"])
+
     def test_repo_path_argument_is_supported(self):
         parser = git_logic.argparse.ArgumentParser()
         parser.add_argument("--repo", "--repo-path", dest="repo_path", default=".")
