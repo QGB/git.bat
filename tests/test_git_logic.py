@@ -123,6 +123,17 @@ class PureFunctionTests(unittest.TestCase):
                             choices=["push", "pull"])
         self.assertEqual(parser.parse_args([]).mode, "push")
 
+    def test_set_remote_uses_explicit_repository_path(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target = Path(temp_dir)
+            subprocess.run(["git", "init", "-q"], cwd=target, check=True)
+            git_logic.set_remote("git", "https://example.invalid/target.git", target)
+            result = subprocess.run(
+                ["git", "config", "--get", "remote.origin.url"],
+                cwd=target, capture_output=True, text=True, check=True,
+            )
+            self.assertEqual(result.stdout.strip(), "https://example.invalid/target.git")
+
     def test_parse_user_identity_input_supports_defaults_spaces_and_commas(self):
         self.assertEqual(
             git_logic.parse_user_identity_input("1", "old", "old@mail", "remote", "remote@mail"),

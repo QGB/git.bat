@@ -145,9 +145,10 @@ def find_git(user_git: str) -> str:
     sys.exit(1)
 
 
-def get_origin_url(git_bin: str) -> str:
+def get_origin_url(git_bin: str, repo_root: Path = None) -> str:
     try:
-        res = subprocess.run([git_bin, "remote", "get-url", "origin"], capture_output=True, text=True)
+        res = subprocess.run([git_bin, "remote", "get-url", "origin"], cwd=repo_root,
+                             capture_output=True, text=True)
         if res.returncode == 0 and res.stdout.strip():
             return res.stdout.strip()
     except:
@@ -155,11 +156,12 @@ def get_origin_url(git_bin: str) -> str:
     return ""
 
 
-def get_current_branch(git_bin: str) -> str:
+def get_current_branch(git_bin: str, repo_root: Path = None) -> str:
     """Return the current branch, including an unborn branch after git init."""
     try:
         result = subprocess.run(
             [git_bin, "symbolic-ref", "--quiet", "--short", "HEAD"],
+            cwd=repo_root,
             capture_output=True,
             text=True,
         )
@@ -180,13 +182,14 @@ def is_git_repository(git_bin: str, repo_root: Path) -> bool:
     return result.returncode == 0
 
 
-def get_branch_tracking_url(git_bin: str, branch: str) -> str:
+def get_branch_tracking_url(git_bin: str, branch: str, repo_root: Path = None) -> str:
     try:
         remote_name = subprocess.run([git_bin, "config", "--get", f"branch.{branch}.remote"],
-                                     capture_output=True, text=True).stdout.strip()
+                                     cwd=repo_root, capture_output=True, text=True).stdout.strip()
         if not remote_name:
             return ""
-        url_res = subprocess.run([git_bin, "remote", "get-url", remote_name], capture_output=True, text=True)
+        url_res = subprocess.run([git_bin, "remote", "get-url", remote_name], cwd=repo_root,
+                     capture_output=True, text=True)
         if url_res.returncode == 0 and url_res.stdout.strip():
             return url_res.stdout.strip()
         if looks_like_url(remote_name):
@@ -451,18 +454,19 @@ def install_git_filter_repo(git_bin: str) -> bool:
     return run_shell(git_bin, ["filter-repo", "--version"]).returncode == 0
 
 
-def set_remote(git_bin: str, remote_url: str):
+def set_remote(git_bin: str, remote_url: str, repo_root: Path = None):
     if not remote_url:
         return
-    check = subprocess.run([git_bin, "remote", "get-url", "origin"], capture_output=True, text=True)
+    check = subprocess.run([git_bin, "remote", "get-url", "origin"], cwd=repo_root,
+                           capture_output=True, text=True)
     if check.returncode == 0:
         if check.stdout.strip() == remote_url:
             return
         logger.info("更新远程 origin 地址...")
-        run_shell(git_bin, ["remote", "set-url", "origin", remote_url])
+        run_shell(git_bin, ["remote", "set-url", "origin", remote_url], cwd=repo_root)
     else:
         logger.info("添加远程 origin 地址...")
-        run_shell(git_bin, ["remote", "add", "origin", remote_url])
+        run_shell(git_bin, ["remote", "add", "origin", remote_url], cwd=repo_root)
 
 
 def parse_github_subdirectory_url(remote_url: str) -> tuple[str, str | None, str | None]:
@@ -636,7 +640,7 @@ def run_network_retry(git_bin: str, cmd_args: list[str], operation: str, remote_
 
 def git_pull(git_bin: str, branch: str, extra_args: list[str], remote_url: str = "",
              connect_timeout: int = 45, low_speed_limit: int = 1000, low_speed_time: int = 30,
-             retry_count: int = 10, retry_seconds: int = 5):
+             retry_count: int = 10, retry_seconds: int = 5, repo_root: Path = None):
     git_config_args = [
         "-c", f"http.connectTimeout={connect_timeout}",
         "-c", f"http.lowSpeedLimit={low_speed_limit}",
@@ -644,7 +648,7 @@ def git_pull(git_bin: str, branch: str, extra_args: list[str], remote_url: str =
     ]
     pull_args = git_config_args + ["pull", "--progress"] + extra_args + [remote_url, branch]
     run_network_retry(git_bin, pull_args, "拉取", remote_url, branch, retry_count, retry_seconds,
-                      logger.getEffectiveLevel() <= logging.DEBUG)
+                      logger.getEffectiveLevel() <= logging.DEBUG, cwd=repo_root)
     logger.info("===== 开始执行 git lfs pull =====")
     run_shell(git_bin, ["lfs", "pull"], realtime=True)
 
@@ -828,7 +832,8 @@ def parse_user_identity_input(value: str, current_name: str, current_email: str,
     return name or current_name or default_name, email or current_email or default_email
 
 
-def apply_git_user_config(git_bin: str, remote_url: str, user_arg: str, no_ask: bool = False):
+def apply_git_user_config(git_bin: str, remote_url: str, user_arg: str,
+                          no_ask: bool = False, repo_root: Path = None):
     if not remote_url:
         return
     remote_user = extract_remote_user_from_url(remote_url)
@@ -839,16 +844,18 @@ def apply_git_user_config(git_bin: str, remote_url: str, user_arg: str, no_ask: 
             logger.warning("无法提取用户名，回退为 'git_user'")
         target_email = f"{target_user}@users.noreply.github.com"
         logger.info(f"强制应用用户配置 (-u): user.name=[{target_user}], user.email=[{target_email}]")
-        run_shell(git_bin, ["config", "user.name", target_user])
-        run_shell(git_bin, ["config", "user.email", target_email])
+        run_shell(git_bin, ["config", "user.name", target_user], cwd=repo_root)
+        run_shell(git_bin, ["config", "user.email", target_email], cwd=repo_root)
         return
     if not remote_user:
         return
     if no_ask:
         logger.info("非交互模式：保留当前 Git 用户配置。")
         return
-    local_name = subprocess.run([git_bin, "config", "user.name"], capture_output=True, text=True).stdout.strip()
-    local_email = subprocess.run([git_bin, "config", "user.email"], capture_output=True, text=True).stdout.strip()
+    local_name = subprocess.run([git_bin, "config", "user.name"], cwd=repo_root,
+                                capture_output=True, text=True).stdout.strip()
+    local_email = subprocess.run([git_bin, "config", "user.email"], cwd=repo_root,
+                                 capture_output=True, text=True).stdout.strip()
     default_email = f"{remote_user}@users.noreply.github.com"
     if local_name != remote_user or local_email != default_email:
         logger.warning("发现当前 Git 用户配置与远程目标不一致！")
@@ -863,8 +870,8 @@ def apply_git_user_config(git_bin: str, remote_url: str, user_arg: str, no_ask: 
         target_name, target_email = parse_user_identity_input(
             identity, local_name, local_email, remote_user, default_email
         )
-        run_shell(git_bin, ["config", "user.name", target_name])
-        run_shell(git_bin, ["config", "user.email", target_email])
+        run_shell(git_bin, ["config", "user.name", target_name], cwd=repo_root)
+        run_shell(git_bin, ["config", "user.email", target_email], cwd=repo_root)
         logger.info(f"✅ 应用本次 Commit 配置: user.name={target_name}, user.email={target_email}")
 
 
@@ -1006,7 +1013,7 @@ def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
     if not is_git_repository(git_bin, repo_root):
         logger.error("当前目录尚未初始化 Git 仓库。")
         sys.exit(1)
-    apply_git_user_config(git_bin, remote_url, user_arg, no_ask)
+    apply_git_user_config(git_bin, remote_url, user_arg, no_ask, repo_root)
     realtime = logger.getEffectiveLevel() <= logging.DEBUG
     if not remove_stale_index_lock(git_bin, repo_root):
         sys.exit(1)
@@ -1236,8 +1243,9 @@ def main():
             logger.error("git init 失败")
             sys.exit(1)
     if not args.branch and args.mode in ("push", "pull"):
-        args.branch = get_current_branch(git_exe) or "main"
-    remote_url = args.remote or get_origin_url(git_exe) or get_branch_tracking_url(git_exe, args.branch)
+        args.branch = get_current_branch(git_exe, repo_root) or "main"
+    remote_url = (args.remote or get_origin_url(git_exe, repo_root)
+                  or get_branch_tracking_url(git_exe, args.branch, repo_root))
     clone_branch = args.branch
     clone_subdirectory = None
     explicit_branch = any(option in sys.argv[1:] for option in ("--branch", "-b"))
@@ -1262,7 +1270,7 @@ def main():
     try:
         if args.mode == "config":
             logger.info("===== 根据远程 URL 配置当前仓库用户 =====")
-            apply_git_user_config(git_exe, remote_url, "AUTO", args.no_ask)
+            apply_git_user_config(git_exe, remote_url, "AUTO", args.no_ask, repo_root)
             logger.info("✅ 当前仓库用户配置完成！")
             return
         if args.mode == "clone":
@@ -1292,7 +1300,7 @@ def main():
             target_hashes = [h.strip() for h in args.hashes.split(",") if h.strip()] if args.hashes else None
             git_remove_big(git_exe, threshold_bytes, target_hashes)
             if remote_url:
-                set_remote(git_exe, remote_url)
+                set_remote(git_exe, remote_url, repo_root)
                 logger.info("✅ 远程地址已重新绑定。")
             return
         large_files = scan_large_files(repo_root, threshold_bytes)
@@ -1309,13 +1317,14 @@ def main():
                 sys.exit(1)
             clean_and_apply_lfs(git_exe, repo_root, large_files)
         if remote_url:
-            set_remote(git_exe, remote_url)
+            set_remote(git_exe, remote_url, repo_root)
         if args.mode == "pull":
             git_pull(git_exe, args.branch, extra, remote_url,
                      retry_count=args.retry,
                      connect_timeout=args.connect_timeout,
                      low_speed_limit=args.low_speed_limit,
-                     low_speed_time=args.low_speed_time)
+                     low_speed_time=args.low_speed_time,
+                     repo_root=repo_root)
         elif args.mode == "push":
             git_push(git_exe, args.branch, repo_root, extra, args.commit_msg, remote_url,
                      args.user, args.retry,
