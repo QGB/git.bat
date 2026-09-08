@@ -1189,7 +1189,7 @@ def main():
     parser.add_argument("--user", "-u", nargs="?", const="AUTO", default=None, help="自动配置 Git 用户")
     parser.add_argument("--noask", "-noask", "--no-ask", "-y", "-yes", dest="no_ask", action="store_true",
                         help="非交互模式：自动确认初始化并跳过用户配置询问")
-    parser.add_argument("--retry", "-r", type=int, default=10, help="Push 失败重试次数")
+    parser.add_argument("--retry", "-retry", "-r", type=int, default=10, help="Push/Pull 失败重试次数")
     parser.add_argument("--verbose", "-v", type=int, default=2,
                         help="日志级别: 0=Error, 1=Warn, 2=Info, 3=Debug")
     # 新增网络超时相关参数
