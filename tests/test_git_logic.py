@@ -43,6 +43,21 @@ class GitRepositoryTestCase(unittest.TestCase):
 
 
 class PureFunctionTests(unittest.TestCase):
+    def test_github_permission_denial_is_not_treated_as_network_error(self):
+        result = subprocess.CompletedProcess(
+            ["git", "push"],
+            128,
+            stdout="remote: Permission to qgbcs/multi_mqtt.git denied to qgbcs.\n"
+                   "fatal: The requested URL returned error: 403\n",
+        )
+        with patch.object(git_logic, "run_shell", return_value=result), \
+                self.assertRaises(SystemExit) as error:
+            git_logic.run_network_retry(
+                "git", ["push"], "推送", "https://github.com/qgbcs/multi_mqtt.git", "master",
+                retry_count=2,
+            )
+        self.assertEqual(error.exception.code, 1)
+
     def test_parse_size_str_supports_units_and_invalid_values(self):
         self.assertEqual(git_logic.parse_size_str("2gb"), 2 * 1024 ** 3)
         self.assertEqual(git_logic.parse_size_str("1.5mb"), int(1.5 * 1024 ** 2))

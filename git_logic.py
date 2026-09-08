@@ -595,7 +595,10 @@ def run_network_retry(git_bin: str, cmd_args: list[str], operation: str, remote_
     auth_kw = [
         "http 401",
         "http 403",
+        "error: 401",
+        "error: 403",
         "fatal: authentication failed",
+        "permission to ",
         "permission denied (publickey)",
     ]
     history_large_file_kw = [
