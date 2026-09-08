@@ -109,6 +109,20 @@ class PureFunctionTests(unittest.TestCase):
             result = git_logic.preprocess_args()
         self.assertEqual(result, argv)
 
+    def test_repo_path_argument_is_supported(self):
+        parser = git_logic.argparse.ArgumentParser()
+        parser.add_argument("--repo", "--repo-path", dest="repo_path", default=".")
+        self.assertEqual(parser.parse_args(["--repo", "/tmp/repository"]).repo_path,
+                         "/tmp/repository")
+        self.assertEqual(parser.parse_args(["--repo-path", "/tmp/repository"]).repo_path,
+                         "/tmp/repository")
+
+    def test_mode_defaults_to_push(self):
+        parser = git_logic.argparse.ArgumentParser()
+        parser.add_argument("mode", nargs="?", default="push",
+                            choices=["push", "pull"])
+        self.assertEqual(parser.parse_args([]).mode, "push")
+
     def test_parse_user_identity_input_supports_defaults_spaces_and_commas(self):
         self.assertEqual(
             git_logic.parse_user_identity_input("1", "old", "old@mail", "remote", "remote@mail"),

@@ -1187,6 +1187,8 @@ def main():
     configured_branch = os.environ.get("BRANCH")
     parser = argparse.ArgumentParser(description="Git Auto LFS Tool")
     parser.add_argument("--git", default=default_git, help="git 可执行文件路径")
+    parser.add_argument("--repo-path", "--repo", "--path", "-path", "-p", dest="repo_path", default=".",
+                        help="指定 Git 仓库路径，默认使用当前目录")
     parser.add_argument("--branch", '-b', default=configured_branch, help="分支名称")
     parser.add_argument("--size", '-s', default="100mb", help="大文件大小限制（默认 100mb）")
     parser.add_argument("--threshold", type=int, default=0, help="字节数阈值（兼容）")
@@ -1208,12 +1210,17 @@ def main():
                         help="低速持续超时时间（秒）")
     parser.add_argument("--max-commit-size", type=parse_size_str, default=1900 * 1024 * 1024,
                         help="单个提交的最大暂存 Blob 大小（默认 1900mb，超过后自动分段）")
-    parser.add_argument("mode", choices=["push", "pull", "clone", "config", "init", "list-big", "listbig", "remove-big", "undo"])
+    parser.add_argument("mode", nargs="?", default="push",
+                        choices=["push", "pull", "clone", "config", "init", "list-big", "listbig", "remove-big", "undo"])
     args, extra = parser.parse_known_args()
 
     setup_logging(args.verbose)
     git_exe = find_git(args.git)
-    repo_root = Path.cwd()
+    repo_root = Path(args.repo_path).expanduser().resolve()
+    if not repo_root.is_dir():
+        logger.critical(f"指定的仓库路径不存在或不是目录: {repo_root}")
+        sys.exit(1)
+    os.chdir(repo_root)
     if args.mode == "push" and not is_git_repository(git_exe, repo_root):
         logger.warning("当前目录尚未初始化 Git 仓库。")
         choice = "yes" if args.no_ask else ""
