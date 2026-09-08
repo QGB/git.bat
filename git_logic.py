@@ -466,11 +466,18 @@ def set_remote(git_bin: str, remote_url: str):
 
 
 def parse_github_subdirectory_url(remote_url: str) -> tuple[str, str | None, str | None]:
-    """Return (repository URL, branch, subdirectory) for a GitHub web URL."""
+    """Return (repository URL, branch, subdirectory) for a GitHub URL."""
     parsed = urlparse(remote_url)
     if parsed.scheme not in ("http", "https") or parsed.netloc.lower() not in ("github.com", "www.github.com"):
         return remote_url, None, None
     parts = [part for part in parsed.path.strip("/").split("/") if part]
+    if len(parts) == 3:
+        owner, repository, branch = parts
+        repository = repository.removesuffix(".git")
+        repository_url = urlunparse(parsed._replace(
+            path=f"/{owner}/{repository}.git", params="", query="", fragment=""
+        ))
+        return repository_url, branch, None
     if len(parts) < 5 or parts[2] not in ("blob", "tree"):
         return remote_url, None, None
     owner, repository, _, branch, *subdirectory = parts
@@ -1226,9 +1233,11 @@ def main():
     remote_url = args.remote or get_origin_url(git_exe) or get_branch_tracking_url(git_exe, args.branch)
     clone_branch = args.branch
     clone_subdirectory = None
-    if args.mode == "clone" and remote_url:
+    explicit_branch = any(option in sys.argv[1:] for option in ("--branch", "-b"))
+    if remote_url and args.mode in ("push", "pull", "clone"):
         remote_url, url_branch, clone_subdirectory = parse_github_subdirectory_url(remote_url)
-        if url_branch:
+        if url_branch and not explicit_branch:
+            args.branch = url_branch
             clone_branch = url_branch
     if not remote_url and args.mode not in ("list-big", "listbig", "remove-big", "undo"):
         logger.critical("未提供远程仓库地址，且未找到 origin/tracking 配置。")

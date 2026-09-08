@@ -66,6 +66,10 @@ class PureFunctionTests(unittest.TestCase):
         )
         self.assertEqual(result, ("https://github.com/acme/demo.git", "dev", "mobile/app"))
         self.assertEqual(
+            git_logic.parse_github_subdirectory_url("https://github.com/acme/demo/master"),
+            ("https://github.com/acme/demo.git", "master", None),
+        )
+        self.assertEqual(
             git_logic.parse_github_subdirectory_url("git@github.com:acme/demo.git"),
             ("git@github.com:acme/demo.git", None, None),
         )
