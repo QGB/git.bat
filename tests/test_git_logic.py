@@ -70,6 +70,18 @@ class PureFunctionTests(unittest.TestCase):
             ("https://github.com/acme/demo.git", "master", None),
         )
         self.assertEqual(
+            git_logic.parse_github_subdirectory_url(
+                "https://alice:secret@example.com/acme/demo/master"
+            ),
+            ("https://alice:secret@example.com/acme/demo/master", None, None),
+        )
+        self.assertEqual(
+            git_logic.parse_github_subdirectory_url(
+                "https://alice:secret@github.com/acme/demo/master"
+            ),
+            ("https://alice:secret@github.com/acme/demo.git", "master", None),
+        )
+        self.assertEqual(
             git_logic.parse_github_subdirectory_url("git@github.com:acme/demo.git"),
             ("git@github.com:acme/demo.git", None, None),
         )

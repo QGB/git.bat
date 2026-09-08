@@ -468,7 +468,7 @@ def set_remote(git_bin: str, remote_url: str):
 def parse_github_subdirectory_url(remote_url: str) -> tuple[str, str | None, str | None]:
     """Return (repository URL, branch, subdirectory) for a GitHub URL."""
     parsed = urlparse(remote_url)
-    if parsed.scheme not in ("http", "https") or parsed.netloc.lower() not in ("github.com", "www.github.com"):
+    if parsed.scheme not in ("http", "https") or (parsed.hostname or "").lower() not in ("github.com", "www.github.com"):
         return remote_url, None, None
     parts = [part for part in parsed.path.strip("/").split("/") if part]
     if len(parts) == 3:
