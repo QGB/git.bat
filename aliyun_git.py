@@ -3,6 +3,11 @@
 import os, time, json, base64, hashlib, requests, sys
 requests.packages.urllib3.disable_warnings()
 
+_py_repr = repr  # 保存内置 repr，防止后面形参遮蔽
+
+# ============================================================
+# 配置加载
+# ============================================================
 _cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "!config.json")
 if not os.path.isfile(_cfg_path):
     raise SystemExit(f"[FATAL] 找不到配置文件: {_cfg_path}")
@@ -21,14 +26,69 @@ DEFAULT_VISIBILITY = "private"
 DEFAULT_TIMEOUT = 600
 MAX_OPENAPI_SIZE = 1024 * 1024 * 50  # 50MB OpenAPI 硬上限
 
-# 可选：手动指定 LFS Basic Auth 克隆账号/密码（若自动嗅探失败时使用）
-MANUAL_CLONE_USERNAME = _cfg.get("MANUAL_CLONE_USERNAME", "") or ""
-MANUAL_CLONE_PASSWORD = _cfg.get("MANUAL_CLONE_PASSWORD", "") or ""
+# ---- LFS Basic Auth（可选）----
+# 密码恒为 DEFAULT_TOKEN，无需单独配置。
+# 若 BASIC_AUTH_USERNAME 非空，则跳过自动嗅探，直接用它做 Basic Auth 用户名。
+BASIC_AUTH_USERNAME = (_cfg.get("BASIC_AUTH_USERNAME")
+                       or _cfg.get("MANUAL_CLONE_USERNAME") or "")
 
-# 保存内置 repr，防止后续函数参数遮蔽
-_py_repr = repr
+
+# ============================================================
+# 请求打印 & 统一请求入口
+# ============================================================
+_PRINT_REQ = False
 
 
+class _PrintReqCtx:
+    """上下文：临时开启/关闭请求打印，支持嵌套调用全局生效。"""
+    def __init__(self, enable):
+        self.enable = bool(enable)
+
+    def __enter__(self):
+        global _PRINT_REQ
+        self._old = _PRINT_REQ
+        _PRINT_REQ = self.enable
+        return self
+
+    def __exit__(self, *exc):
+        global _PRINT_REQ
+        _PRINT_REQ = self._old
+        return False
+
+
+def _fmt_request_arg(v):
+    """把请求参数格式化为可读的、可复现的字符串。"""
+    if v is None:
+        return 'None'
+    if isinstance(v, (str, bytes, bytearray, int, float, bool)):
+        return _py_repr(v)
+    if isinstance(v, (dict, list, tuple, set)):
+        return _py_repr(v)
+    if hasattr(v, 'read') and hasattr(v, '__len__'):
+        try:
+            n = len(v)
+        except Exception:
+            n = '?'
+        return f'<stream {type(v).__name__} len={n}>'
+    return _py_repr(v)
+
+
+def _req(method, url, **kwargs):
+    """统一 requests 入口：_PRINT_REQ=True 时打印一行可复现的 requests.* 调用。"""
+    if _PRINT_REQ:
+        parts = []
+        for k, v in kwargs.items():
+            if k.startswith('_'):
+                continue
+            parts.append(f'{k}={_fmt_request_arg(v)}')
+        args_str = (',' + ','.join(parts)) if parts else ''
+        print(f"requests.{method.lower()}({_py_repr(url)}{args_str},)")
+    return requests.request(method, url, **kwargs)
+
+
+# ============================================================
+# 通用工具
+# ============================================================
 def readable_size(n, ndigits=2):
     """把字节数转换成人类可读字符串，例如 390876536 -> '372.77MB'"""
     units = ('B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB')
@@ -43,21 +103,7 @@ def readable_size(n, ndigits=2):
 
 
 def object_custom_repr(obj, max_show_bytes_size=None, preview_len=99, **kwargs):
-    """
-    标准库实现：为 bytes 返回一个 __repr__ 被自定义的 bytes 子类实例。
-
-    行为等价于：
-        if max_show_bytes_size and len(obj) > max_show_bytes_size:
-            return <带自定义 repr 的 bytes 对象>
-        else:
-            return obj
-
-    自定义 repr 形如：  b'前99字节...'#372.77MB
-
-    兼容旧式关键字参数：repr= / target= / f= / size=  （均忽略或用于兼容）
-    """
-    # 关键修复：形参名不能叫 repr，否则会遮蔽内置 repr()。
-    # 这里通过 **kwargs 兼容旧式调用，不引入同名的局部变量。
+    """为 bytes 返回一个 __repr__ 被自定义的 bytes 子类实例（仅影响显示）。"""
     kwargs.pop('size', None)
     _ = (kwargs.pop('repr', None)
          or kwargs.pop('target', None)
@@ -74,7 +120,7 @@ def object_custom_repr(obj, max_show_bytes_size=None, preview_len=99, **kwargs):
     if not max_show_bytes_size or len(obj) <= max_show_bytes_size:
         return obj
 
-    preview = _py_repr(obj[:preview_len])           # b'...'
+    preview = _py_repr(obj[:preview_len])
     custom = f'{preview}...#{readable_size(len(obj))}'
 
     class _TruncatedBytes(bytes):
@@ -92,7 +138,7 @@ class CodeupError(Exception):
 
 
 _repo_cache = {}
-_lfs_identity_cache = {}   # (token, domain, org_id, repo_name) -> (candidate_usernames, official_repo_url)
+_lfs_identity_cache = {}
 
 
 class _ProgressStream:
@@ -125,8 +171,8 @@ class _ProgressStream:
         self.offset += len(chunk)
         elapsed = time.time() - self.start_time
         speed = (self.offset / 1024 / 1024) / elapsed if elapsed > 0 else 0
-        print(f"\r{self.prefix}:{self.offset/1024/1024:.2f}/{self.length/1024/1024:.2f}MB {speed:.2f}MB/s",
-              end="", flush=True)
+        print(f"\r{self.prefix}:{self.offset/1024/1024:.2f}/{self.length/1024/1024:.2f}MB "
+              f"{speed:.2f}MB/s", end="", flush=True)
 
         if self.offset >= self.length:
             self.finish_time = time.time()
@@ -139,7 +185,8 @@ class _ProgressStream:
 
 
 def _auto_msg_from_bytes(payload_or_path):
-    ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()) + f".{int(time.time()*1000)%1000:03d}"
+    ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()) + \
+         f".{int(time.time()*1000)%1000:03d}"
     if isinstance(payload_or_path, str) and os.path.isfile(payload_or_path):
         size = os.path.getsize(payload_or_path)
         return f"{ts}={size}B=LFS_FILE"
@@ -164,22 +211,27 @@ def _base(token=None, domain=None, org_id=None):
 
 def _ensure_repo(repo_name, token=None, domain=None, org_id=None,
                  visibility=DEFAULT_VISIBILITY, timeout=DEFAULT_TIMEOUT):
+    """
+    确保仓库存在（仅上传路径使用）。
+    会话内 _repo_cache 命中后不再产生任何请求。
+    """
     key = (repo_name, domain or DEFAULT_DOMAIN)
     if key in _repo_cache:
         return _repo_cache[key]
     base, headers, _ = _base(token, domain, org_id)
-    body = {"name": repo_name, "path": repo_name, "visibility": visibility, "readMeType": "EMPTY"}
-    r = requests.post(f"{base}/repositories?createParentPath=true",
-                      headers=headers, json=body, verify=False, timeout=timeout)
+    body = {"name": repo_name, "path": repo_name,
+            "visibility": visibility, "readMeType": "EMPTY"}
+    r = _req("POST", f"{base}/repositories?createParentPath=true",
+             headers=headers, json=body, verify=False, timeout=timeout)
     if r.status_code in (200, 201):
         rid = r.json().get("id")
         if rid:
             _repo_cache[key] = rid
             return rid
     if r.status_code == 409:
-        r2 = requests.get(f"{base}/repositories", headers=headers,
-                          params={"search": repo_name, "page": 1, "perPage": 10},
-                          verify=False, timeout=timeout)
+        r2 = _req("GET", f"{base}/repositories", headers=headers,
+                  params={"search": repo_name, "page": 1, "perPage": 10},
+                  verify=False, timeout=timeout)
         if r2.status_code == 200:
             data = r2.json()
             repos = data if isinstance(data, list) else data.get("result", [])
@@ -201,7 +253,6 @@ def _parse_codeup_file_url(url):
     """
     解析 Codeup OpenAPI 文件 URL：
     https://{domain}/oapi/v1/codeup/repositories/{org}%2F{repo}/files/{file_path}?ref={branch}
-    返回 dict(domain, org_id, repo_name, file_path, branch)，无法识别返回 None
     """
     from urllib.parse import urlparse, unquote, parse_qs
     try:
@@ -210,7 +261,6 @@ def _parse_codeup_file_url(url):
         return None
     if not p.netloc:
         return None
-
     path = p.path
     marker = "/repositories/"
     idx = path.find(marker)
@@ -219,20 +269,16 @@ def _parse_codeup_file_url(url):
     rest = path[idx + len(marker):]
     if "/files/" not in rest:
         return None
-
     rid_enc, file_enc = rest.split("/files/", 1)
-    rid = unquote(rid_enc)              # q18/qpsu-repo
+    rid = unquote(rid_enc)
     file_path = unquote(file_enc)
     if not file_path:
         return None
-
     if "/" in rid:
         org_id, repo_name = rid.split("/", 1)
     else:
         org_id, repo_name = None, rid
-
     branch = parse_qs(p.query).get("ref", [None])[0]
-
     return {
         "domain": p.netloc,
         "org_id": org_id,
@@ -251,7 +297,7 @@ def _get_oid_and_size(data):
     size = 0
     if isinstance(data, str) and os.path.isfile(data):
         with open(data, "rb") as f:
-            while chunk := f.read(1024 * 1024 * 4):  # 4MB 块读取防内存溢出
+            while chunk := f.read(1024 * 1024 * 4):
                 h.update(chunk)
                 size += len(chunk)
     else:
@@ -262,93 +308,73 @@ def _get_oid_and_size(data):
 
 def _make_lfs_pointer(oid, size):
     """生成 Git LFS 的标准指针文件内容"""
-    return f"version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {size}\n".encode("utf-8")
+    return (f"version https://git-lfs.github.com/spec/v1\n"
+            f"oid sha256:{oid}\nsize {size}\n").encode("utf-8")
 
 
 def _detect_lfs_identity(token, domain, org_id, repo_name):
     """
-    通过 OpenAPI 自动嗅探 Token 归属的真实克隆账号 & 代码库标准 Git 地址。
-    LFS Batch API 的 Basic Auth 用户名必须是【真实的云效账号】。
+    解析 LFS Basic Auth 候选账号列表。
+
+    优先级：
+      1. !config.json 中配置的 BASIC_AUTH_USERNAME（如有）→ 跳过嗅探，直接用它。
+      2. 否则走 OpenAPI 自动嗅探（查询 /platform/user 等接口）。
     """
     cache_key = (token, domain, org_id, repo_name)
     if cache_key in _lfs_identity_cache:
         return _lfs_identity_cache[cache_key]
 
     candidate_usernames = []
-    official_repo_url = None
 
-    if MANUAL_CLONE_USERNAME:
-        candidate_usernames.append(MANUAL_CLONE_USERNAME)
+    # ---------- 分支 1: config 提供了 Basic Auth 账号 ----------
+    if BASIC_AUTH_USERNAME:
+        print(f"  [√] 使用 !config.json 中的 Basic Auth 账号: {BASIC_AUTH_USERNAME}"
+              f"（跳过自动嗅探）")
+        candidate_usernames.append(BASIC_AUTH_USERNAME)
+    else:
+        # ---------- 分支 2: 自动嗅探 ----------
+        oapi_headers = {
+            "x-yunxiao-token": token,
+            "Private-Token": token,
+            "Authorization": f"Bearer {token}",
+        }
+        user_endpoints = [
+            f"https://{domain}/oapi/v1/platform/user",
+            f"https://{domain}/oapi/v1/user",
+            f"https://{domain}/oapi/v1/codeup/user",
+        ]
+        for u_url in user_endpoints:
+            try:
+                res = _req("GET", u_url, headers=oapi_headers, verify=False, timeout=8)
+                if res.status_code == 200:
+                    data = res.json()
+                    user_info = data.get("result") or data
+                    if isinstance(user_info, dict):
+                        if user_info.get("username"):
+                            candidate_usernames.append(str(user_info["username"]))
+                        if user_info.get("name"):
+                            candidate_usernames.append(str(user_info["name"]))
+                        if user_info.get("id"):
+                            candidate_usernames.append(str(user_info["id"]))
+                        if user_info.get("email"):
+                            candidate_usernames.append(str(user_info["email"]).split("@")[0])
+                        print(f"  [√] OpenAPI 嗅探真实账号: "
+                              f"{user_info.get('username') or user_info.get('name') or user_info.get('id')}")
+                        break
+            except Exception:
+                pass
 
-    oapi_headers = {
-        "x-yunxiao-token": token,
-        "Private-Token": token,
-        "Authorization": f"Bearer {token}",
-    }
-
-    # ---- 1. 嗅探当前用户身份 ----
-    user_endpoints = [
-        f"https://{domain}/oapi/v1/platform/user",
-        f"https://{domain}/oapi/v1/user",
-        f"https://{domain}/oapi/v1/codeup/user",
-    ]
-    for u_url in user_endpoints:
-        try:
-            res = requests.get(u_url, headers=oapi_headers, verify=False, timeout=8)
-            if res.status_code == 200:
-                data = res.json()
-                user_info = data.get("result") or data
-                if isinstance(user_info, dict):
-                    if user_info.get("username"):
-                        candidate_usernames.append(str(user_info["username"]))
-                    if user_info.get("name"):
-                        candidate_usernames.append(str(user_info["name"]))
-                    if user_info.get("id"):
-                        candidate_usernames.append(str(user_info["id"]))
-                    if user_info.get("email"):
-                        candidate_usernames.append(str(user_info["email"]).split("@")[0])
-                    print(f"  [√] OpenAPI 嗅探真实账号: "
-                          f"{user_info.get('username') or user_info.get('name') or user_info.get('id')}")
-                    break
-        except Exception:
-            pass
-
-    # ---- 2. 嗅探仓库标准 Git 地址 ----
-    try:
-        rid = f"{org_id}%2F{repo_name}"
-        repo_url = f"https://{domain}/oapi/v1/codeup/repositories/{rid}"
-        res = requests.get(repo_url, headers=oapi_headers, verify=False, timeout=10)
-        if res.status_code == 200:
-            data = res.json()
-            info = data.get("result") or data
-            official_repo_url = info.get("httpUrlToRepo")
-            if official_repo_url:
-                print(f"  [√] OpenAPI 嗅探标准 Git 地址: {official_repo_url}")
-    except Exception:
-        pass
-
-    # ---- 3. 兜底候选账号 ----
-    candidate_usernames.extend([org_id, "git"])
-    candidate_usernames = list(dict.fromkeys([u for u in candidate_usernames if u]))
-
-    print(f"  [*] LFS Basic Auth 账号候选列表: {candidate_usernames}")
-    result = (candidate_usernames, official_repo_url)
-    _lfs_identity_cache[cache_key] = result
-    return result
+    # candidate_usernames.extend([org_id, "git"])
+    # candidate_usernames = list(dict.fromkeys([u for u in candidate_usernames if u]))
+    # print(f"  [*] LFS Basic Auth 账号候选列表: {candidate_usernames}")
+    _lfs_identity_cache[cache_key] = candidate_usernames
+    return candidate_usernames
 
 
 def _lfs_batch_request(operation, oid, size, repo_name, token, domain, org_id, branch=None):
-    """
-    调用 Git LFS Batch API 获取上传/下载授权链接。
-      - 自动嗅探真实克隆账号做 Basic Auth 用户名；
-      - 优先走标准 /codeup/{repo}.git/info/lfs/objects/batch 路径；
-      - 使用 Git-LFS 客户端 UA 伪装；
-      - 严格只保留 Basic Auth，绝不携带 Bearer / Private-Token；
-      - 多 URL / 多账号轮询，提升兼容性。
-    """
+    """调用 Git LFS Batch API 获取上传/下载授权链接。"""
     branch = branch or DEFAULT_BRANCH
-
-    candidate_usernames, official_repo_url = _detect_lfs_identity(token, domain, org_id, repo_name)
+    candidate_usernames = _detect_lfs_identity(token, domain, org_id, repo_name)
 
     payload = {
         "operation": operation,
@@ -357,75 +383,62 @@ def _lfs_batch_request(operation, oid, size, repo_name, token, domain, org_id, b
         "ref": {"name": f"refs/heads/{branch}"},
     }
 
-    # ---- 构造候选 LFS Batch URL ----
-    target_urls = []
-    if official_repo_url:
-        u = official_repo_url.rstrip("/")
-        if not u.endswith(".git"):
-            u += ".git"
-        target_urls.append(f"{u}/info/lfs/objects/batch")
-
-    target_urls.extend([
+    # ---- 候选 LFS Batch URL（按经验顺序：标准约定优先，再兜底）----
+    target_urls = [
         f"https://{domain}/codeup/{repo_name}.git/info/lfs/objects/batch",
         f"https://{domain}/codeup/{org_id}/{repo_name}.git/info/lfs/objects/batch",
-    ])
+    ]
     target_urls = list(dict.fromkeys(target_urls))
-
-    # ---- 密码候选：手动优先，否则默认 PAT ----
-    password_candidates = [token]
-    if MANUAL_CLONE_PASSWORD and MANUAL_CLONE_PASSWORD != token:
-        password_candidates.insert(0, MANUAL_CLONE_PASSWORD)
 
     ua = "git-lfs/3.5.1 (GitHub; windows amd64; go 1.21.0) git/2.44.0.windows.1"
 
     last_err = None
     for url in target_urls:
         for user in candidate_usernames:
-            for pwd in password_candidates:
-                auth_b64 = base64.b64encode(f"{user}:{pwd}".encode("utf-8")).decode("utf-8")
-                headers = {
-                    "Accept": "application/vnd.git-lfs+json",
-                    "Content-Type": "application/vnd.git-lfs+json",
-                    "User-Agent": ua,
-                    "Authorization": f"Basic {auth_b64}",
-                }
-                try:
-                    r = requests.post(url, json=payload, headers=headers,
-                                      verify=False, timeout=30)
-                    if r.status_code in (200, 202):
-                        ct = r.headers.get("Content-Type", "")
-                        if "json" in ct.lower() or r.text.strip().startswith("{"):
-                            try:
-                                return r.json()
-                            except Exception:
-                                last_err = f"响应非 JSON: {r.text[:200]}"
-                                continue
-                        else:
-                            last_err = "HTTP 200 但返回 HTML 页面，非目标 API 路由"
+            # 密码恒为 token（已按用户要求去掉独立的 BASIC_AUTH_PASSWORD 配置）
+            auth_b64 = base64.b64encode(f"{user}:{token}".encode("utf-8")).decode("utf-8")
+            headers = {
+                "Accept": "application/vnd.git-lfs+json",
+                "Content-Type": "application/vnd.git-lfs+json",
+                "User-Agent": ua,
+                "Authorization": f"Basic {auth_b64}",
+            }
+            try:
+                r = _req("POST", url, json=payload, headers=headers,
+                         verify=False, timeout=30)
+                if r.status_code in (200, 202):
+                    ct = r.headers.get("Content-Type", "")
+                    if "json" in ct.lower() or r.text.strip().startswith("{"):
+                        try:
+                            return r.json()
+                        except Exception:
+                            last_err = f"响应非 JSON: {r.text[:200]}"
                             continue
-                    elif r.status_code == 401:
-                        last_err = f"401 (账号 '{user}' 未匹配或密码错误)"
-                    elif r.status_code == 403:
-                        last_err = f"403 -> {r.text[:120]}"
                     else:
-                        last_err = f"[{r.status_code}] {r.text[:150]}"
-                except requests.RequestException as e:
-                    last_err = f"网络异常: {e}"
+                        last_err = "HTTP 200 但返回 HTML 页面，非目标 API 路由"
+                        continue
+                elif r.status_code == 401:
+                    last_err = f"401 (账号 '{user}' 未匹配或密码错误)"
+                elif r.status_code == 403:
+                    last_err = f"403 -> {r.text[:120]}"
+                else:
+                    last_err = f"[{r.status_code}] {r.text[:150]}"
+            except requests.RequestException as e:
+                last_err = f"网络异常: {e}"
 
     raise CodeupError(
         f"LFS Batch API 鉴权失败 [{operation}]。最后错误: {last_err}\n"
-        "[*] 若持续失败，请在 Codeup 控制台 → 个人设置 → HTTPS密码 中查看【克隆账号】/【克隆密码】，\n"
-        "    填入 !config.json 的 MANUAL_CLONE_USERNAME / MANUAL_CLONE_PASSWORD 后重试。"
+        "[*] 若持续失败，可在 Codeup 控制台 → 个人设置 → HTTPS密码 查看【克隆账号】，\n"
+        "    填入 !config.json 的 BASIC_AUTH_USERNAME 后重试。"
     )
 
 
 # ============================================================
-# 底层实现：OpenAPI 普通上传 与 LFS 大文件上传
+# OpenAPI 普通上传
 # ============================================================
 def upload_openapi(data, repo_name=DEFAULT_REPO, file_path=None, token=None, domain=None,
                    org_id=DEFAULT_ORG_ID, branch=None, visibility=None,
                    commit_message=None, overwrite=True, timeout=None):
-    """原版 OpenAPI 接口：只处理 50MB 以下的小文件"""
     repo_name = repo_name or DEFAULT_REPO
     branch = branch or DEFAULT_BRANCH
     visibility = visibility or DEFAULT_VISIBILITY
@@ -469,8 +482,8 @@ def upload_openapi(data, repo_name=DEFAULT_REPO, file_path=None, token=None, dom
     h["Content-Length"] = str(len(payload_json))
 
     try:
-        r = requests.request("POST", f"{base}/repositories/{rid}/files",
-                             data=stream, headers=h, verify=False, timeout=timeout)
+        r = _req("POST", f"{base}/repositories/{rid}/files",
+                 data=stream, headers=h, verify=False, timeout=timeout)
     except requests.RequestException as e:
         print()
         raise CodeupError(f"网络上传失败: {e}")
@@ -487,8 +500,8 @@ def upload_openapi(data, repo_name=DEFAULT_REPO, file_path=None, token=None, dom
                    f"{requests.utils.quote(file_path, safe='')}")
         stream2 = _ProgressStream(payload_json, prefix="↑[OpenAPI上行]")
         try:
-            r2 = requests.request("PUT", url_put, data=stream2, headers=h,
-                                  verify=False, timeout=timeout)
+            r2 = _req("PUT", url_put, data=stream2, headers=h,
+                      verify=False, timeout=timeout)
         except requests.RequestException as e:
             print()
             raise CodeupError(f"覆盖网络失败: {e}")
@@ -500,10 +513,12 @@ def upload_openapi(data, repo_name=DEFAULT_REPO, file_path=None, token=None, dom
     raise CodeupError(f"上传失败 [{r.status_code}]: {r.text[:300]}")
 
 
+# ============================================================
+# LFS 大文件上传
+# ============================================================
 def upload_lfs(data, repo_name=DEFAULT_REPO, file_path=None, token=None, domain=None,
                org_id=DEFAULT_ORG_ID, branch=None, visibility=None,
                commit_message=None, overwrite=True, timeout=DEFAULT_TIMEOUT):
-    """Git LFS 上传底层逻辑：分为上传二进制大文件 和 提交 LFS Pointer 到代码库"""
     token = token or DEFAULT_TOKEN
     domain = domain or DEFAULT_DOMAIN
     repo_name = repo_name or DEFAULT_REPO
@@ -519,6 +534,7 @@ def upload_lfs(data, repo_name=DEFAULT_REPO, file_path=None, token=None, domain=
     else:
         raise CodeupError("data 必须是 bytes 或文件路径字符串")
 
+    # 上传路径需要确保仓库存在（仅首次会打 1~2 个请求，之后走 _repo_cache）
     _ensure_repo(repo_name, token, domain, org_id)
 
     print(f"[*] 准备 LFS 上传 [{file_path}]，正在计算 SHA256...")
@@ -541,7 +557,8 @@ def upload_lfs(data, repo_name=DEFAULT_REPO, file_path=None, token=None, domain=
         print("[*] 执行 LFS 大文件流式传输...")
         stream = _ProgressStream(data, prefix="↑[LFS上行]")
         try:
-            r = requests.put(url, headers=headers, data=stream, verify=False, timeout=timeout)
+            r = _req("PUT", url, headers=headers, data=stream,
+                     verify=False, timeout=timeout)
         except requests.RequestException as e:
             print()
             raise CodeupError(f"LFS 二进制上传失败: {e}")
@@ -564,61 +581,62 @@ def upload_lfs(data, repo_name=DEFAULT_REPO, file_path=None, token=None, domain=
                           overwrite=overwrite, timeout=timeout)
 
 
-# 兼容保留原有 alias
 lfs_upload = upload_lfs
 
 
 # ============================================================
-# 对外统一入口：智能 Upload (自动判断大小)
+# 对外统一入口：智能 Upload
 # ============================================================
 def upload(data, repo_name=DEFAULT_REPO, file_path=None, token=None, domain=None,
            org_id=DEFAULT_ORG_ID, branch=None, visibility=None,
-           commit_message=None, overwrite=True, timeout=None):
+           commit_message=None, overwrite=True, timeout=None, print_req=False):
     """
     对外统一的智能上传接口：
-    自动判断文件大小：
-    - 小于等于 50MB: 使用普通 OpenAPI 模式上传。
-    - 大于 50MB: 自动切换至 Git LFS 模式上传。
+      - <= 50MB: OpenAPI 普通上传
+      - >  50MB: 自动切换至 Git LFS 上传
+    print_req=True 时打印所有 HTTP 请求（method / url / headers / body）
     """
-    if isinstance(data, str):
-        if not os.path.isfile(data):
-            raise CodeupError(f"文件不存在: {data}")
-        size = os.path.getsize(data)
-    elif isinstance(data, (bytes, bytearray)):
-        size = len(data)
-    else:
-        raise CodeupError("data 必须是 bytes 或文件路径字符串")
+    with _PrintReqCtx(print_req):
+        if isinstance(data, str):
+            if not os.path.isfile(data):
+                raise CodeupError(f"文件不存在: {data}")
+            size = os.path.getsize(data)
+        elif isinstance(data, (bytes, bytearray)):
+            size = len(data)
+        else:
+            raise CodeupError("data 必须是 bytes 或文件路径字符串")
 
-    if size > MAX_OPENAPI_SIZE:
-        print(f"\n[!] 自动判断: 数据大小 {size/1024/1024:.2f}MB > 50MB，自动切入 LFS 模式...")
-        return upload_lfs(data, repo_name, file_path, token, domain, org_id, branch,
-                          visibility, commit_message, overwrite, timeout)
-    else:
-        print(f"\n[*] 自动判断: 数据大小 {size/1024/1024:.2f}MB <= 50MB，使用常规 OpenAPI 模式...")
-        return upload_openapi(data, repo_name, file_path, token, domain, org_id, branch,
+        if size > MAX_OPENAPI_SIZE:
+            print(f"\n[!] 自动判断: 数据大小 {size/1024/1024:.2f}MB > 50MB，自动切入 LFS 模式...")
+            return upload_lfs(data, repo_name, file_path, token, domain, org_id, branch,
                               visibility, commit_message, overwrite, timeout)
+        else:
+            print(f"\n[*] 自动判断: 数据大小 {size/1024/1024:.2f}MB <= 50MB，使用常规 OpenAPI 模式...")
+            return upload_openapi(data, repo_name, file_path, token, domain, org_id, branch,
+                                  visibility, commit_message, overwrite, timeout)
 
 
 # ============================================================
-# 底层实现：OpenAPI 普通下载 与 LFS 下载
+# OpenAPI 普通下载（不再调用 _ensure_repo，直接拼 rid）
 # ============================================================
 def download_openapi(file_path=None, repo_name=None, token=None, domain=None,
                      org_id=None, branch=None, timeout=None, save_to=None):
-    """原版 OpenAPI 下载接口，只负责读取代码库里的文件(或 LFS Pointer)"""
     if not file_path:
         raise CodeupError("必须提供 file_path")
     repo_name = repo_name or DEFAULT_REPO
     branch = branch or DEFAULT_BRANCH
     timeout = timeout or DEFAULT_TIMEOUT
+    org_id = org_id or DEFAULT_ORG_ID
     base, headers, dom = _base(token, domain, org_id)
-    rid = _ensure_repo(repo_name, token, domain, org_id, timeout=timeout)
+    # 直接用字符串 rid（OpenAPI 同样接受 org%2Frepo 形式），不再探测仓库数字 id
+    rid = f"{org_id}%2F{repo_name}"
     url = (f"{base}/repositories/{rid}/files/"
            f"{requests.utils.quote(file_path, safe='')}?ref={branch}")
 
     print(f"[*] OpenAPI 请求元数据 [{file_path}] ...")
     t0 = time.time()
     try:
-        r = requests.get(url, headers=headers, verify=False, stream=True, timeout=timeout)
+        r = _req("GET", url, headers=headers, verify=False, stream=True, timeout=timeout)
     except requests.RequestException as e:
         raise CodeupError(f"请求失败: {e}")
 
@@ -655,18 +673,18 @@ def download_openapi(file_path=None, repo_name=None, token=None, domain=None,
     return result
 
 
+# ============================================================
+# LFS 下载（自动识别 pointer）
+# ============================================================
 def download_lfs(file_path=None, repo_name=DEFAULT_REPO, token=None, domain=None,
                  org_id=DEFAULT_ORG_ID, branch=None, timeout=DEFAULT_TIMEOUT, save_to=None):
-    """底层 LFS 识别与下载逻辑"""
     token = token or DEFAULT_TOKEN
     domain = domain or DEFAULT_DOMAIN
     branch = branch or DEFAULT_BRANCH
 
-    # 1. 内部调用 OpenAPI 下载 (获取文件内容或 LFS 指针)
     raw_data = download_openapi(file_path=file_path, repo_name=repo_name, token=token,
                                 domain=domain, org_id=org_id, branch=branch, timeout=timeout)
 
-    # 2. 检查是否为 LFS 指针
     if raw_data.startswith(b"version https://git-lfs.github.com/spec/v1"):
         print(f"\n[*] 识别为 LFS 大文件指针，正在向 LFS 服务器请求真实对象...")
         text = raw_data.decode("utf-8")
@@ -681,7 +699,6 @@ def download_lfs(file_path=None, repo_name=DEFAULT_REPO, token=None, domain=None
         if not oid:
             raise CodeupError("LFS 指针文件损坏：未找到 oid")
 
-        # 3. 请求真实的 LFS 下载
         batch_res = _lfs_batch_request("download", oid, size, repo_name, token,
                                        domain, org_id, branch)
         obj_info = batch_res["objects"][0]
@@ -693,7 +710,7 @@ def download_lfs(file_path=None, repo_name=DEFAULT_REPO, token=None, domain=None
 
         print(f"[*] 获取 LFS 二进制流...")
         t0 = time.time()
-        r = requests.get(url, headers=headers, verify=False, stream=True, timeout=timeout)
+        r = _req("GET", url, headers=headers, verify=False, stream=True, timeout=timeout)
         ttfb = (time.time() - t0) * 1000
         print(f"[-] LFS 节点 TTFB: {ttfb:.2f}ms")
 
@@ -739,7 +756,6 @@ def download_lfs(file_path=None, repo_name=DEFAULT_REPO, token=None, domain=None
         return raw_data
 
 
-# 兼容保留原有 alias
 lfs_download = download_lfs
 
 
@@ -748,41 +764,44 @@ lfs_download = download_lfs
 # ============================================================
 def download(file_path=None, repo_name=DEFAULT_REPO, token=None, domain=None,
              org_id=DEFAULT_ORG_ID, branch=None, timeout=DEFAULT_TIMEOUT,
-             save_to=None, max_show_bytes_size=99):
+             save_to=None, max_show_bytes_size=99, print_req=False):
     """
     对外统一的智能下载接口：
-    - file_path 支持：纯文件名、相对/绝对路径字符串、以及 upload() 返回的完整 Codeup URL。
-    - 若识别为 LFS Pointer，会自动拉取背后真实的 LFS 大文件。
-    - 若返回 bytes 且长度超过 max_show_bytes_size，则包装为带自定义 repr 的 bytes 子类（只影响显示，不截断数据）。
+      - file_path 支持：纯文件名 / 相对绝对路径 / upload() 返回的完整 Codeup URL
+      - 若识别为 LFS Pointer，会自动拉取背后真实的 LFS 大文件
+      - 返回 bytes 且长度超过 max_show_bytes_size 时，包装为带自定义 repr 的
+        bytes 子类实例（仅影响显示，不截断数据）
+    print_req=True 时打印所有 HTTP 请求（method / url / headers / body）
     """
-    if not file_path:
-        raise CodeupError("必须提供 file_path 或 Codeup 文件 URL")
+    with _PrintReqCtx(print_req):
+        if not file_path:
+            raise CodeupError("必须提供 file_path 或 Codeup 文件 URL")
 
-    # ---- URL 自动解析（关键新增）----
-    if isinstance(file_path, str) and file_path.startswith(("http://", "https://")):
-        parsed = _parse_codeup_file_url(file_path)
-        if parsed is None:
-            raise CodeupError(f"无法解析该 Codeup 文件 URL: {file_path}")
-        print(f"[*] 从 URL 解析: domain={parsed['domain']} "
-              f"org={parsed['org_id']} repo={parsed['repo_name']} "
-              f"branch={parsed['branch']}")
-        print(f"[*] 目标文件: {parsed['file_path']}")
-        file_path = parsed["file_path"]
-        domain    = parsed["domain"]    or domain
-        org_id    = parsed["org_id"]    or org_id
-        repo_name = parsed["repo_name"] or repo_name
-        branch    = parsed["branch"]    or branch
+        if isinstance(file_path, str) and file_path.startswith(("http://", "https://")):
+            parsed = _parse_codeup_file_url(file_path)
+            if parsed is None:
+                raise CodeupError(f"无法解析该 Codeup 文件 URL: {file_path}")
+            print(f"[*] 从 URL 解析: domain={parsed['domain']} "
+                  f"org={parsed['org_id']} repo={parsed['repo_name']} "
+                  f"branch={parsed['branch']}")
+            print(f"[*] 目标文件: {parsed['file_path']}")
+            file_path = parsed["file_path"]
+            domain    = parsed["domain"]    or domain
+            org_id    = parsed["org_id"]    or org_id
+            repo_name = parsed["repo_name"] or repo_name
+            branch    = parsed["branch"]    or branch
 
-    b = download_lfs(file_path, repo_name, token, domain, org_id, branch, timeout, save_to)
+        b = download_lfs(file_path, repo_name, token, domain, org_id, branch, timeout, save_to)
 
-    # 只对 bytes/bytearray 结果做展示包装；save_to 返回的路径 str 原样返回
-    if isinstance(b, (bytes, bytearray)) and max_show_bytes_size and len(b) > max_show_bytes_size:
-        return object_custom_repr(b, max_show_bytes_size=max_show_bytes_size)
-    return b
+        if isinstance(b, (bytes, bytearray)) and max_show_bytes_size and len(b) > max_show_bytes_size:
+            return object_custom_repr(b, max_show_bytes_size=max_show_bytes_size)
+        return b
 
 
+# ============================================================
+# 自测
+# ============================================================
 if __name__ == "__main__":
-    # 模拟环境：生成一个小文件和一个 100MB 大文件
     SMALL_FILE = "test_1MB.bin"
     LARGE_FILE = "lfs_test_100MB.bin"
 
@@ -797,9 +816,9 @@ if __name__ == "__main__":
             f.write(os.urandom(100 * 1024 * 1024))
 
     print("\n" + "=" * 50)
-    print("测试统一 UPLOAD 接口 (传小文件)")
+    print("测试统一 UPLOAD 接口 (传小文件) + print_req")
     print("=" * 50)
-    url_small = upload(SMALL_FILE, file_path="test_1MB.bin")
+    url_small = upload(SMALL_FILE, file_path="test_1MB.bin", print_req=True)
     print(f"[+] 小文件链接: {url_small}")
 
     print("\n" + "=" * 50)
