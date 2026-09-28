@@ -72,8 +72,8 @@ def generate_deterministic_keys(secexp, curve='NIST256p', comment="", out_dir=os
     private_numbers = ec.EllipticCurvePrivateNumbers(
         private_value=secexp,
         public_numbers=ec.EllipticCurvePublicNumbers(
-            x=vk_ecdsa.pubkey.point.x(),
-            y=vk_ecdsa.pubkey.point.y(),
+            x=int(vk_ecdsa.pubkey.point.x()),   # 修改：转换为 int
+            y=int(vk_ecdsa.pubkey.point.y()),   # 修改：转换为 int
             curve=ec.SECP256R1()
         )
     )
