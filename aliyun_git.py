@@ -7,24 +7,78 @@ _py_repr = repr  # 保存内置 repr，防止后面形参遮蔽
 
 # ============================================================
 # 配置加载
+# 优先级：sys._qgb_dict 注入 > 命令行参数 > 脚本同目录 !config.json
+# 命令行两种写法（空格分隔或等号均可；同时出现多次时以最后一次为准）：
+#   --config PATH          从任意路径读取 JSON 配置文件
+#   --config-json 'JSON'   直接传 JSON 原文，无需落地配置文件
+# 例（cmd / .bat）：
+#   python aliyun_git.py --config D:\secrets\aliyun.json
+#   python aliyun_git.py --config-json "{\"DEFAULT_TOKEN\":\"xxx\",\"DEFAULT_DOMAIN\":\"codeup.aliyuncs.com\"}"
+# 例（PowerShell 5.1，内嵌双引号必须加反斜杠转义；嫌麻烦直接用 --config 文件）：
+#   python aliyun_git.py --config-json '{\"DEFAULT_TOKEN\":\"xxx\",\"DEFAULT_DOMAIN\":\"codeup.aliyuncs.com\"}'
+# 注意：这里手工扫描 sys.argv 而不用 argparse，且不改写 sys.argv，
+# 避免本模块被 chaquopy mqtt server 等宿主程序 import 时干扰宿主自身的参数解析。
 # ============================================================
-_cfg=getattr(sys,'_qgb_dict',{}).get('aliyun_git',{})
+def _parse_config_args(argv):
+    """从 argv 中提取 --config / --config-json，返回 (kind, value)；
+    kind 为 'file'（配置路径）或 'json'（JSON 原文），未提供返回 (None, None)。"""
+    sources = []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("--config", "--config-json"):
+            if i + 1 >= len(argv):
+                raise SystemExit(f"[FATAL] {a} 缺少参数值")  # chaquopy 下直接停止服务
+            sources.append(("file" if a == "--config" else "json", argv[i + 1]))
+            i += 2
+            continue
+        if a.startswith("--config="):
+            sources.append(("file", a[len("--config="):]))
+        elif a.startswith("--config-json="):
+            sources.append(("json", a[len("--config-json="):]))
+        i += 1
+    return sources[-1] if sources else (None, None)
+
+
+def _load_config_dict(kind, value):
+    """kind='file'：value 为 JSON 配置文件路径；kind='json'：value 为 JSON 原文。"""
+    if kind == "json":
+        try:
+            cfg = json.loads(value)
+        except Exception as e:
+            raise SystemExit(f"[FATAL] --config-json 不是合法 JSON: {e}")
+    else:
+        if not os.path.isfile(value):
+            raise SystemExit(f"[FATAL] 找不到配置文件: {value}")
+        # utf-8-sig 可同时兼容带/不带 BOM 的 JSON（Windows 记事本常写出 BOM）
+        with open(value, "r", encoding="utf-8-sig") as f:
+            try:
+                cfg = json.load(f)
+            except Exception as e:
+                raise SystemExit(f"[FATAL] 配置文件不是合法 JSON ({value}): {e}")
+    if not isinstance(cfg, dict):
+        raise SystemExit("[FATAL] 配置顶层必须是 JSON 对象: {...}")
+    return cfg
+
+
+_cfg = getattr(sys, '_qgb_dict', {}).get('aliyun_git', {})
 if not _cfg:
-    _cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "!config.json")
-    if not os.path.isfile(_cfg_path):
-        # raise Exception(f"找不到配置文件: {_cfg_path}")
-        raise SystemExit(f"[FATAL] 找不到配置文件: {_cfg_path}")# chaquopy mqtt server 直接停止服务
-    with open(_cfg_path, "r", encoding="utf-8") as _f:
-        _cfg = json.load(_f)
-        if _cfg:
-            sys._qgb_dict=getattr(sys,'_qgb_dict',{})
-            sys._qgb_dict['aliyun_git']=getattr(sys,'_qgb_dict',{}).get('aliyun_git',{})
-            sys._qgb_dict['aliyun_git'].update(_cfg)
-            
+    _cfg_kind, _cfg_value = _parse_config_args(sys.argv[1:])
+    if _cfg_kind is None:
+        _cfg_kind = "file"
+        _cfg_value = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  "!config.json")
+    _cfg = _load_config_dict(_cfg_kind, _cfg_value)
+    if _cfg:
+        sys._qgb_dict = getattr(sys, '_qgb_dict', {})
+        sys._qgb_dict['aliyun_git'] = getattr(sys, '_qgb_dict', {}).get('aliyun_git', {})
+        sys._qgb_dict['aliyun_git'].update(_cfg)
+
 DEFAULT_TOKEN = _cfg.get("DEFAULT_TOKEN")
 DEFAULT_DOMAIN = _cfg.get("DEFAULT_DOMAIN")
 if not DEFAULT_TOKEN or not DEFAULT_DOMAIN:
-    raise SystemExit("[FATAL] !config.json 必须包含非空的 DEFAULT_TOKEN 和 DEFAULT_DOMAIN")
+    raise SystemExit("[FATAL] 配置必须包含非空的 DEFAULT_TOKEN 和 DEFAULT_DOMAIN"
+                     "（来源：!config.json / --config / --config-json）")
 
 DEFAULT_ORG_ID = DEFAULT_DOMAIN.split('-')[0]
 DEFAULT_REPO = "qpsu-repo"
@@ -336,7 +390,7 @@ def _detect_lfs_identity(token, domain, org_id, repo_name):
 
     # ---------- 分支 1: config 提供了 Basic Auth 账号 ----------
     if BASIC_AUTH_USERNAME:
-        print(f"  [√] 使用 !config.json 中的 Basic Auth 账号: {BASIC_AUTH_USERNAME}"
+        print(f"  [√] 使用配置中的 Basic Auth 账号: {BASIC_AUTH_USERNAME}"
               f"（跳过自动嗅探）")
         candidate_usernames.append(BASIC_AUTH_USERNAME)
     else:

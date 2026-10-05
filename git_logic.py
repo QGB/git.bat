@@ -1321,7 +1321,7 @@ git gc --prune=now --aggressive
 def main():
     sys.argv = preprocess_args()
     default_git = os.environ.get("GIT_PATH", "git")
-    configured_branch = os.environ.get("BRANCH")
+    configured_branch = os.environ.get("BRANCH") or 'main'
     parser = argparse.ArgumentParser(description="Git Auto LFS Tool")
     parser.add_argument("--git", default=default_git, help="git 可执行文件路径")
     parser.add_argument("--repo-path", "--repo", "--path", "-path", "-p", dest="repo_path", default=".",
