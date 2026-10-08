@@ -148,6 +148,20 @@ def _req(method, url, **kwargs):
 
 
 # ============================================================
+# progress 钩子辅助（下载链路透传：download / download_lfs / download_openapi）
+# 约定：progress(got, total)，total 未知时传 0；回调异常绝不能影响传输本身。
+# 旧版本 aliyun_git 没有 progress 形参，调用方需自行做能力探测（见 client_service）。
+# ============================================================
+def _fire_progress(progress, current, total):
+    if progress is None:
+        return
+    try:
+        progress(current, total)
+    except Exception:
+        pass
+
+
+# ============================================================
 # 通用工具
 # ============================================================
 def readable_size(n, ndigits=2):
@@ -682,7 +696,8 @@ def upload(data, repo_name=DEFAULT_REPO, file_path=None, token=None, domain=None
 # OpenAPI 普通下载（不再调用 _ensure_repo，直接拼 rid）
 # ============================================================
 def download_openapi(file_path=None, repo_name=None, token=None, domain=None,
-                     org_id=None, branch=None, timeout=None, save_to=None):
+                     org_id=None, branch=None, timeout=None, save_to=None,
+                     progress=None):
     if not file_path:
         raise CodeupError("必须提供 file_path")
     repo_name = repo_name or DEFAULT_REPO
@@ -715,6 +730,7 @@ def download_openapi(file_path=None, repo_name=None, token=None, domain=None,
         if chunk:
             chunks.append(chunk)
             downloaded += len(chunk)
+            _fire_progress(progress, downloaded, total)
             el = time.time() - t0
             sp = (downloaded / 1024 / 1024) / el if el > 0 else 0
             if total > 50000:
@@ -739,13 +755,23 @@ def download_openapi(file_path=None, repo_name=None, token=None, domain=None,
 # LFS 下载（自动识别 pointer）
 # ============================================================
 def download_lfs(file_path=None, repo_name=DEFAULT_REPO, token=None, domain=None,
-                 org_id=DEFAULT_ORG_ID, branch=None, timeout=DEFAULT_TIMEOUT, save_to=None):
+                 org_id=DEFAULT_ORG_ID, branch=None, timeout=DEFAULT_TIMEOUT, save_to=None,
+                 progress=None):
     token = token or DEFAULT_TOKEN
     domain = domain or DEFAULT_DOMAIN
     branch = branch or DEFAULT_BRANCH
 
+    # pointer 文件很小（百字节级）。先缓冲 OpenAPI 段的最后一次进度：
+    # 若确为 LFS，指针包进度丢弃、由下面真实 LFS 流汇报；若不是 LFS（普通文件），
+    # 回放一次完整进度，避免小文件（图片等）完全没有进度回调。
+    buffered = {}
+
+    def _openapi_progress(got, total):
+        buffered["got"], buffered["total"] = got, total
+
     raw_data = download_openapi(file_path=file_path, repo_name=repo_name, token=token,
-                                domain=domain, org_id=org_id, branch=branch, timeout=timeout)
+                                domain=domain, org_id=org_id, branch=branch, timeout=timeout,
+                                progress=_openapi_progress if progress is not None else None)
 
     if raw_data.startswith(b"version https://git-lfs.github.com/spec/v1"):
         print(f"\n[*] 识别为 LFS 大文件指针，正在向 LFS 服务器请求真实对象...")
@@ -796,6 +822,7 @@ def download_lfs(file_path=None, repo_name=DEFAULT_REPO, token=None, domain=None
                     chunks.append(chunk)
 
                 downloaded += len(chunk)
+                _fire_progress(progress, downloaded, total)
                 el = time.time() - t0
                 sp = (downloaded / 1024 / 1024) / el if el > 0 else 0
                 print(f"\r↓[LFS下行]:{downloaded/1024/1024:.2f}/{total/1024/1024:.2f}MB "
@@ -810,6 +837,9 @@ def download_lfs(file_path=None, repo_name=DEFAULT_REPO, token=None, domain=None
 
     else:
         print("\n[*] 识别为普通文件，直接返回。")
+        # 普通文件：OpenAPI 段已下完，回放最后一次（通常即完成）进度。
+        if buffered:
+            _fire_progress(progress, buffered.get("got", 0), buffered.get("total", 0))
         if save_to:
             os.makedirs(os.path.dirname(os.path.abspath(save_to)), exist_ok=True)
             with open(save_to, "wb") as f:
@@ -826,7 +856,7 @@ lfs_download = download_lfs
 # ============================================================
 def download(file_path=None, repo_name=DEFAULT_REPO, token=None, domain=None,
              org_id=DEFAULT_ORG_ID, branch=None, timeout=DEFAULT_TIMEOUT,
-             save_to=None, max_show_bytes_size=99, print_req=False):
+             save_to=None, max_show_bytes_size=99, print_req=False, progress=None):
     """
     对外统一的智能下载接口：
       - file_path 支持：纯文件名 / 相对绝对路径 / upload() 返回的完整 Codeup URL
@@ -853,7 +883,8 @@ def download(file_path=None, repo_name=DEFAULT_REPO, token=None, domain=None,
             repo_name = parsed["repo_name"] or repo_name
             branch    = parsed["branch"]    or branch
 
-        b = download_lfs(file_path, repo_name, token, domain, org_id, branch, timeout, save_to)
+        b = download_lfs(file_path, repo_name, token, domain, org_id, branch, timeout,
+                         save_to, progress=progress)
 
         if isinstance(b, (bytes, bytearray)) and max_show_bytes_size and len(b) > max_show_bytes_size:
             return object_custom_repr(b, max_show_bytes_size=max_show_bytes_size)
