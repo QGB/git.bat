@@ -21,6 +21,8 @@ commit_msg auto模式下 加入  最大size 修改的文件名。
 
 使用 `git.bat clone <远程仓库地址> [目标目录]` 克隆仓库。工具会自动检查并安装 Git LFS，克隆完成后执行 `git lfs pull`，恢复仓库中的 LFS 大文件。
 
+`--max-commit-size` 只根据本次暂存文件的 Blob 大小拆分新提交，不会拆分本地已有但远端缺失的历史。首次推送或推送大量旧历史时，Git 仍可能生成超过 GitHub 单次 2 GiB 限制的 pack；这类历史需要按提交批次推送。遇到 `RPC failed; HTTP 500` 或 `pack exceeds maximum allowed size` 时，工具会停止重试，避免重复上传同一个超限 pack。
+
 ## 模块化 Python 工具
 
 `git/` 按核心工具、LFS、网络重试、身份配置、提交推送、历史大文件和命令行入口拆分实现。运行模块化版本：

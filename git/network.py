@@ -39,6 +39,10 @@ RETRY_LARGE_FILE_KEYWORDS = [
     "exceeds github's file size limit",
     "exceeds github's file size limit of 100.00 mb",
 ]
+NON_RETRYABLE_PUSH_KEYWORDS = [
+    "rpc failed; http 500",
+    "pack exceeds maximum allowed size",
+]
 
 def run_network_retry(git_bin: str, cmd_args: list[str], operation: str, remote_url: str,
                       branch: str, retry_count: int = 10, retry_seconds: int = 5,
@@ -86,6 +90,12 @@ def run_network_retry(git_bin: str, cmd_args: list[str], operation: str, remote_
                 logger.error("请先执行 ./git.py list-big，确认 Blob；再执行 ./git.py remove-big，"
                              "完成历史改写后使用 git push --force 推送。")
                 logger.error("如果希望保留这些文件，请先配置 Git LFS 并迁移历史，而不是只新增 .gitattributes。")
+                sys.exit(1)
+
+            if any(keyword in output for keyword in NON_RETRYABLE_PUSH_KEYWORDS):
+                logger.error(f"❌ {operation}遇到 HTTP 500 或 pack 大小限制，停止自动重试。")
+                logger.error("如果本次上传 pack 超过 GitHub 的 2 GiB 单次 push 限制，"
+                             "需要把缺失的提交历史拆成更小批次推送；重复发送同一 pack 不会解决问题。")
                 sys.exit(1)
 
             # 2) 网络 vs 认证：只有“网络错误且非认证错误”才重试

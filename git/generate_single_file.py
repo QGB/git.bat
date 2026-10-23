@@ -68,6 +68,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--force",
+        "-f",
         action="store_true",
         help="allow replacing an existing output file",
     )
