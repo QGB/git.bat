@@ -2,7 +2,6 @@
 import argparse, logging, os, platform, shutil, subprocess, sys, tempfile, time
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
-
 logger = logging.getLogger("GitAutoLFS")
 
 
@@ -253,8 +252,6 @@ def run_shell(git_bin: str, args: list[str], realtime: bool = False, extra_env: 
     except Exception as e:
         logger.critical(f"执行异常: {repr(e)}")
         raise
-
-
 def check_lfs_available(git_bin: str) -> bool:
     return run_shell(git_bin, ["lfs", "version"], realtime=False).returncode == 0
 
@@ -560,7 +557,6 @@ def clean_and_apply_lfs(git_bin: str, repo_root: Path, large_patterns: set[str])
         with open(attr_path, "w", encoding="utf-8") as f:
             f.write("\n".join(all_rules) + "\n")
     logger.info(f".gitattributes 更新完成，LFS追踪总数: {len(lfs_lines)}")
-
 # =====================================================================
 # 网络重试相关关键字（run_network_retry 
 # =====================================================================
@@ -921,7 +917,6 @@ def git_pull(git_bin: str, branch: str, extra_args: list[str], remote_url: str =
     if logger.getEffectiveLevel() <= logging.DEBUG:
         lfs_env.update({"GIT_CURL_VERBOSE": "1", "GIT_TRACE": "1", "GIT_TRANSFER_TRACE": "1"})
     run_shell(git_bin, ["lfs", "pull"], realtime=True, extra_env=lfs_env, cwd=repo_root)
-
 def extract_remote_user_from_url(remote_url: str) -> str | None:
     if not remote_url:
         return None
@@ -1003,8 +998,6 @@ def apply_git_user_config(git_bin: str, remote_url: str, user_arg: str,
         run_shell(git_bin, ["config", "user.name", target_name], cwd=repo_root)
         run_shell(git_bin, ["config", "user.email", target_email], cwd=repo_root)
         logger.info(f"✅ 应用本次 Commit 配置: user.name={target_name}, user.email={target_email}")
-
-
 def get_staged_blob_sizes(git_bin: str, repo_root: Path) -> list[tuple[str, int]]:
     """Return staged paths and their indexed blob sizes without reading worktree files."""
     staged_result = subprocess.run(
@@ -1235,8 +1228,6 @@ def git_push(git_bin: str, branch: str, repo_root: Path, extra_args: list[str],
             f.write(b'')
         logger.info(f"EmptyAfterPush 成功 {stime()}")
     logger.info(f"✅ 推送成功 {stime()}")
-
-
 def git_list_big(git_bin: str, threshold_bytes: int) -> list[tuple[int, str, str]]:
     logger.info(f"===== 扫描历史大文件 >= {threshold_bytes / 1024 / 1024:.2f} MB =====")
     try:
@@ -1316,8 +1307,6 @@ git gc --prune=now --aggressive
     else:
         logger.error("❌ 清理失败")
         sys.exit(1)
-
-
 def main():
     sys.argv = preprocess_args()
     default_git = os.environ.get("GIT_PATH", "git")
@@ -1469,7 +1458,5 @@ def main():
     except KeyboardInterrupt:
         logger.warning("\n[CANCEL] 用户手动终止。")
         sys.exit(130)
-
-
 if __name__ == "__main__":
     main()

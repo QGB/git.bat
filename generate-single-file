@@ -1,0 +1,10 @@
+#!/usr/bin/env python3
+from git.generate_single_file import main
+
+
+if __name__ == "__main__":
+    print(r'''
+./git/generate_single_file.py     
+''')
+    raise SystemExit(main())
+

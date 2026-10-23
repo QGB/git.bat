@@ -1,6 +1,7 @@
 .stfolder/
 __pycache__/
 *.py[cod]
+git_logic.generated.py
 .venv/
 venv/
 .env
