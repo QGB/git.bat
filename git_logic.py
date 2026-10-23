@@ -594,9 +594,10 @@ RETRY_LARGE_FILE_KEYWORDS = [
     "exceeds github's file size limit",
     "exceeds github's file size limit of 100.00 mb",
 ]
-NON_RETRYABLE_PUSH_KEYWORDS = [
-    "rpc failed; http 500",
-    "pack exceeds maximum allowed size",
+NON_RETRYABLE_PUSH_PREFIXES = [
+    "error: rpc failed; http 500",
+    "remote: fatal: pack exceeds maximum allowed size",
+    "fatal: pack exceeds maximum allowed size",
 ]
 
 def run_network_retry(git_bin: str, cmd_args: list[str], operation: str, remote_url: str,
@@ -638,24 +639,30 @@ def run_network_retry(git_bin: str, cmd_args: list[str], operation: str, remote_
             if result.returncode == 0:
                 return result
             output = (result.stdout or "").lower()
+            diagnostic_output = "\n".join(
+                line for line in output.splitlines()
+                if not line.lstrip().startswith("fatal: invalid refspec ")
+            )
 
             # 1) 历史大文件：不可重试
-            if any(keyword in output for keyword in RETRY_LARGE_FILE_KEYWORDS):
+            if any(keyword in diagnostic_output for keyword in RETRY_LARGE_FILE_KEYWORDS):
                 logger.error("❌ GitHub 拒绝了历史中的大文件，当前工作区扫描不到并不代表历史对象已清除。")
                 logger.error("请先执行 ./git.py list-big，确认 Blob；再执行 ./git.py remove-big，"
                              "完成历史改写后使用 git push --force 推送。")
                 logger.error("如果希望保留这些文件，请先配置 Git LFS 并迁移历史，而不是只新增 .gitattributes。")
                 sys.exit(1)
 
-            if any(keyword in output for keyword in NON_RETRYABLE_PUSH_KEYWORDS):
+            output_lines = [line.strip() for line in diagnostic_output.splitlines()]
+            if any(line.startswith(prefix)
+                   for line in output_lines for prefix in NON_RETRYABLE_PUSH_PREFIXES):
                 logger.error(f"❌ {operation}遇到 HTTP 500 或 pack 大小限制，停止自动重试。")
                 logger.error("如果本次上传 pack 超过 GitHub 的 2 GiB 单次 push 限制，"
                              "需要把缺失的提交历史拆成更小批次推送；重复发送同一 pack 不会解决问题。")
                 sys.exit(1)
 
             # 2) 网络 vs 认证：只有“网络错误且非认证错误”才重试
-            is_net = any(keyword in output for keyword in RETRY_NET_KEYWORDS)
-            is_auth = any(keyword in output for keyword in RETRY_AUTH_KEYWORDS)
+            is_net = any(keyword in diagnostic_output for keyword in RETRY_NET_KEYWORDS)
+            is_auth = any(keyword in diagnostic_output for keyword in RETRY_AUTH_KEYWORDS)
             if is_net and not is_auth:
                 logger.warning(f"⚠️ 网络错误，稍后重试 (返回码: {result.returncode})")
             else:

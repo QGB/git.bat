@@ -96,6 +96,22 @@ class PureFunctionTests(unittest.TestCase):
         run_shell.assert_called_once()
         sleep.assert_not_called()
 
+    def test_invalid_refspec_containing_http_500_text_is_not_retried_as_network_error(self):
+        result = subprocess.CompletedProcess(
+            ["git", "push"],
+            128,
+            stdout="fatal: invalid refspec 'fix RPC failed; HTTP 500 handling'\n",
+        )
+        with patch.object(git_logic, "run_shell", return_value=result) as run_shell, \
+                patch.object(git_logic.logger, "error") as log_error, \
+                self.assertRaises(SystemExit):
+            git_logic.run_network_retry(
+                "git", ["push"], "推送", "git@example.invalid:repo.git", "main",
+                retry_count=2,
+            )
+        self.assertIn("推送失败", log_error.call_args_list[0].args[0])
+        run_shell.assert_called_once()
+
     def test_parse_size_str_supports_units_and_invalid_values(self):
         self.assertEqual(git_logic.parse_size_str("2gb"), 2 * 1024 ** 3)
         self.assertEqual(git_logic.parse_size_str("1.5mb"), int(1.5 * 1024 ** 2))
