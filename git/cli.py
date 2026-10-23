@@ -1,3 +1,6 @@
+import json
+from urllib.request import urlopen
+
 from .shared import Path, argparse, os, sys
 from .core import (find_git, get_branch_tracking_url, get_current_branch, get_origin_url,
                    is_git_repository, logger, parse_size_str, preprocess_args, redact_url,
@@ -8,6 +11,41 @@ from .network import git_clone, git_pull
 from .identity import apply_git_user_config
 from .commit import git_push
 from .history import git_list_big, git_remove_big
+
+
+def parse_retry_count(value: str) -> int | str:
+    if value.lower() == "auto":
+        return "auto"
+    try:
+        retry_count = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("重试次数必须是正整数或 auto") from error
+    if retry_count < 1:
+        raise argparse.ArgumentTypeError("重试次数必须大于 0")
+    return retry_count
+
+
+def detect_country_code() -> str | None:
+    try:
+        with urlopen("https://ipapi.co/json/", timeout=5) as response:
+            data = json.loads(response.read(4096).decode("utf-8"))
+    except (OSError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        logger.warning(f"⚠️ 无法通过公网 IP 检测所在国家，自动重试次数使用默认值 3：{error}")
+        return None
+    country_code = data.get("country_code") if isinstance(data, dict) else None
+    if not isinstance(country_code, str) or not country_code:
+        logger.warning("⚠️ IP 地区服务未返回有效国家代码，自动重试次数使用默认值 3。")
+        return None
+    return country_code.upper()
+
+
+def resolve_retry_count(value: int | str) -> int:
+    if value != "auto":
+        return value
+    country_code = detect_country_code()
+    retry_count = 99 if country_code == "CN" else 3
+    logger.info(f"自动重试次数: {retry_count}（地区: {country_code or '未知'}）")
+    return retry_count
 
 def main():
     sys.argv = preprocess_args()
@@ -26,7 +64,8 @@ def main():
     parser.add_argument("--user", "-u", nargs="?", const="AUTO", default=None, help="自动配置 Git 用户")
     parser.add_argument("--noask", "-noask", "--no-ask", "-y", "-yes", dest="no_ask", action="store_true",
                         help="非交互模式：自动确认初始化并跳过用户配置询问")
-    parser.add_argument("--retry", "-retry", "-r", type=int, default=10, help="Push/Pull 失败重试次数")
+    parser.add_argument("--retry", "-retry", "-r", type=parse_retry_count, default="auto",
+                        help="Push/Pull 失败重试次数（默认 auto：中国地区 99 次，其他地区 3 次）")
     parser.add_argument("--verbose", "-v", type=int, default=2,
                         help="日志级别: 0=Error, 1=Warn, 2=Info, 3=Debug")
     # 新增网络超时相关参数
@@ -43,6 +82,7 @@ def main():
     args, extra = parser.parse_known_args()
 
     setup_logging(args.verbose)
+    args.retry = resolve_retry_count(args.retry)
     git_exe = find_git(args.git)
     repo_root = Path(args.repo_path).expanduser().resolve()
     if not repo_root.is_dir():

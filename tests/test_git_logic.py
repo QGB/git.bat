@@ -5,7 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "git_logic.py"
@@ -43,6 +43,29 @@ class GitRepositoryTestCase(unittest.TestCase):
 
 
 class PureFunctionTests(unittest.TestCase):
+    def test_retry_count_auto_uses_country_based_defaults(self):
+        self.assertEqual(git_logic.parse_retry_count("auto"), "auto")
+        self.assertEqual(git_logic.parse_retry_count("7"), 7)
+        with patch.object(git_logic, "detect_country_code", return_value="CN"):
+            self.assertEqual(git_logic.resolve_retry_count("auto"), 99)
+        with patch.object(git_logic, "detect_country_code", return_value="US"):
+            self.assertEqual(git_logic.resolve_retry_count("auto"), 3)
+        with patch.object(git_logic, "detect_country_code") as detect_country_code:
+            self.assertEqual(git_logic.resolve_retry_count(5), 5)
+        detect_country_code.assert_not_called()
+
+    def test_retry_count_rejects_nonpositive_and_invalid_values(self):
+        for value in ("0", "-1", "many"):
+            with self.subTest(value=value), self.assertRaises(git_logic.argparse.ArgumentTypeError):
+                git_logic.parse_retry_count(value)
+
+    def test_detect_country_code_reads_ip_geolocation_response(self):
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b'{"country_code":"cn"}'
+        with patch.object(git_logic, "urlopen", return_value=response) as urlopen:
+            self.assertEqual(git_logic.detect_country_code(), "CN")
+        urlopen.assert_called_once_with("https://ipapi.co/json/", timeout=5)
+
     def test_git_pull_enables_lfs_trace_in_debug_mode(self):
         with patch.object(git_logic, "run_network_retry"), \
                 patch.object(git_logic, "run_shell") as run_shell:
