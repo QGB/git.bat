@@ -1,4 +1,3 @@
-import json
 from urllib.request import urlopen
 
 from .shared import Path, argparse, os, sys
@@ -25,26 +24,26 @@ def parse_retry_count(value: str) -> int | str:
     return retry_count
 
 
-def detect_country_code() -> str | None:
+def can_reach_google(timeout: float = 5) -> bool:
+    """尝试与 google.com 建立 HTTPS 连接，判断是否处于可直连 Google 的网络。
+
+    ipapi.co 之类的公网 IP 地理接口不稳定，可能限流或返回异常内容导致地区误判；
+    改用连通性探测：大陆网络通常无法直连 google.com，连通即视为海外网络。
+    """
     try:
-        with urlopen("https://ipapi.co/json/", timeout=5) as response:
-            data = json.loads(response.read(4096).decode("utf-8"))
-    except (OSError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        logger.warning(f"⚠️ 无法通过公网 IP 检测所在国家，自动重试次数使用默认值 3：{error}")
-        return None
-    country_code = data.get("country_code") if isinstance(data, dict) else None
-    if not isinstance(country_code, str) or not country_code:
-        logger.warning("⚠️ IP 地区服务未返回有效国家代码，自动重试次数使用默认值 3。")
-        return None
-    return country_code.upper()
+        with urlopen("https://www.google.com/generate_204", timeout=timeout):
+            return True
+    except (OSError, TimeoutError):
+        return False
 
 
 def resolve_retry_count(value: int | str) -> int:
     if value != "auto":
         return value
-    country_code = detect_country_code()
-    retry_count = 99 if country_code == "CN" else 3
-    logger.info(f"自动重试次数: {retry_count}（地区: {country_code or '未知'}）")
+    google_reachable = can_reach_google()
+    retry_count = 3 if google_reachable else 99
+    logger.info(f"自动重试次数: {retry_count}"
+                f"（google.com HTTPS 直连{'成功' if google_reachable else '失败'}）")
     return retry_count
 
 def main():
@@ -65,7 +64,7 @@ def main():
     parser.add_argument("--noask", "-noask", "--no-ask", "-y", "-yes", dest="no_ask", action="store_true",
                         help="非交互模式：自动确认初始化并跳过用户配置询问")
     parser.add_argument("--retry", "-retry", "-r", type=parse_retry_count, default="auto",
-                        help="Push/Pull 失败重试次数（默认 auto：中国地区 99 次，其他地区 3 次）")
+                        help="Push/Pull 失败重试次数（默认 auto：google.com 可直连按海外 3 次，不可直连按国内 99 次）")
     parser.add_argument("--verbose", "-v", type=int, default=2,
                         help="日志级别: 0=Error, 1=Warn, 2=Info, 3=Debug")
     # 新增网络超时相关参数

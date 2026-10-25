@@ -46,25 +46,25 @@ class PureFunctionTests(unittest.TestCase):
     def test_retry_count_auto_uses_country_based_defaults(self):
         self.assertEqual(git_logic.parse_retry_count("auto"), "auto")
         self.assertEqual(git_logic.parse_retry_count("7"), 7)
-        with patch.object(git_logic, "detect_country_code", return_value="CN"):
+        with patch.object(git_logic, "can_reach_google", return_value=False):
             self.assertEqual(git_logic.resolve_retry_count("auto"), 99)
-        with patch.object(git_logic, "detect_country_code", return_value="US"):
+        with patch.object(git_logic, "can_reach_google", return_value=True):
             self.assertEqual(git_logic.resolve_retry_count("auto"), 3)
-        with patch.object(git_logic, "detect_country_code") as detect_country_code:
+        with patch.object(git_logic, "can_reach_google") as can_reach_google:
             self.assertEqual(git_logic.resolve_retry_count(5), 5)
-        detect_country_code.assert_not_called()
+        can_reach_google.assert_not_called()
 
     def test_retry_count_rejects_nonpositive_and_invalid_values(self):
         for value in ("0", "-1", "many"):
             with self.subTest(value=value), self.assertRaises(git_logic.argparse.ArgumentTypeError):
                 git_logic.parse_retry_count(value)
 
-    def test_detect_country_code_reads_ip_geolocation_response(self):
-        response = MagicMock()
-        response.__enter__.return_value.read.return_value = b'{"country_code":"cn"}'
-        with patch.object(git_logic, "urlopen", return_value=response) as urlopen:
-            self.assertEqual(git_logic.detect_country_code(), "CN")
-        urlopen.assert_called_once_with("https://ipapi.co/json/", timeout=5)
+    def test_can_reach_google_reports_https_connectivity(self):
+        with patch.object(git_logic, "urlopen", return_value=MagicMock()) as urlopen:
+            self.assertTrue(git_logic.can_reach_google())
+        urlopen.assert_called_once_with("https://www.google.com/generate_204", timeout=5)
+        with patch.object(git_logic, "urlopen", side_effect=OSError("blocked")):
+            self.assertFalse(git_logic.can_reach_google())
 
     def test_git_pull_enables_lfs_trace_in_debug_mode(self):
         with patch.object(git_logic, "run_network_retry"), \
