@@ -4,7 +4,7 @@ from urllib.request import urlopen
 from .shared import Path, argparse, os, sys
 from .core import (find_git, get_branch_tracking_url, get_current_branch, get_origin_url,
                    is_git_repository, logger, parse_size_str, preprocess_args, redact_url,
-                   run_shell, setup_logging)
+                   run_shell, setup_logging, verify_generated_freshness)
 from .lfs import (check_lfs_available, clean_and_apply_lfs, init_lfs, install_lfs,
                   parse_github_subdirectory_url, scan_large_files, set_remote)
 from .network import git_clone, git_pull
@@ -82,6 +82,7 @@ def main():
     args, extra = parser.parse_known_args()
 
     setup_logging(args.verbose)
+    verify_generated_freshness()
     args.retry = resolve_retry_count(args.retry)
     git_exe = find_git(args.git)
     repo_root = Path(args.repo_path).expanduser().resolve()

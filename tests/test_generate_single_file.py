@@ -2,7 +2,7 @@ import ast
 import unittest
 from pathlib import Path
 
-from git.generate_single_file import assemble
+from git.generate_single_file import assemble, source_stamp
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,6 +41,20 @@ class SingleFileGenerationTests(unittest.TestCase):
             ),
             ("https://github.com/acme/demo.git", "dev", "mobile"),
         )
+
+    def test_generated_stamp_matches_sources(self):
+        generated = ast.parse(assemble())
+        constants = {}
+        for node in generated.body:
+            if not (isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)):
+                continue
+            try:
+                constants[node.targets[0].id] = ast.literal_eval(node.value)
+            except ValueError:
+                continue
+        self.assertEqual(constants["GENERATED_SOURCE_STAMP"], source_stamp())
+        self.assertIn("core.py", constants["GENERATED_SOURCE_FILES"])
+        self.assertIn("generate_single_file.py", constants["GENERATED_SOURCE_FILES"])
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@
 
 import argparse
 import ast
+import hashlib
 from pathlib import Path
 
 
@@ -17,6 +18,18 @@ MODULES = (
     "history.py",
     "cli.py",
 )
+STAMP_FILES = MODULES + ("generate_single_file.py",)
+
+
+def source_stamp() -> str:
+    """Fingerprint of every source file that feeds assemble()."""
+    digest = hashlib.sha256()
+    for name in STAMP_FILES:
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update((ROOT / "git" / name).read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def _module_source(path: Path) -> str:
@@ -47,6 +60,8 @@ def assemble() -> str:
     sections.extend(_module_source(ROOT / "git" / module) for module in MODULES)
     sections.extend(
         [
+            f'GENERATED_SOURCE_STAMP = "{source_stamp()}"',
+            f"GENERATED_SOURCE_FILES = {STAMP_FILES!r}",
             'if __name__ == "__main__":',
             "    main()",
             "",

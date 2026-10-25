@@ -1,4 +1,4 @@
-import argparse, logging, os, platform, shutil, subprocess, sys, tempfile, time
+import argparse, hashlib, logging, os, platform, shutil, subprocess, sys, tempfile, time
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 

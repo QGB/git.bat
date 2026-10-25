@@ -1,4 +1,4 @@
-from .shared import Path, logging, os, shutil, subprocess, sys, time, urlparse, urlunparse
+from .shared import Path, hashlib, logging, os, shutil, subprocess, sys, time, urlparse, urlunparse
 
 logger = logging.getLogger("GitAutoLFS")
 
@@ -12,6 +12,40 @@ def setup_logging(verbosity: int):
     logger.setLevel(level)
     if not logger.handlers:
         logger.addHandler(handler)
+
+
+def verify_generated_freshness():
+    """单文件脚本运行时自检：脚本旁存在 git/ 源码目录时，校验是否由该目录最新源码生成。
+
+    生成器在单文件末尾写入 GENERATED_SOURCE_STAMP（参与生成的源码指纹）和
+    GENERATED_SOURCE_FILES（参与生成的文件清单）。以模块包方式运行时没有这两个
+    常量，单文件旁没有 git/ 目录（独立部署）时同样直接跳过，不做任何事。
+    """
+    expected_stamp = globals().get("GENERATED_SOURCE_STAMP")
+    source_files = globals().get("GENERATED_SOURCE_FILES")
+    if not expected_stamp or not source_files:
+        return
+    script_path = Path(__file__).resolve()
+    package_dir = script_path.parent / "git"
+    if not package_dir.is_dir():
+        return
+    digest = hashlib.sha256()
+    for name in source_files:
+        source_path = package_dir / name
+        try:
+            digest.update(name.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(source_path.read_bytes())
+            digest.update(b"\0")
+        except OSError as error:
+            logger.warning(f"⚠️ 无法读取源码文件，跳过新鲜度校验: {source_path} ({error})")
+            return
+    if digest.hexdigest() == expected_stamp:
+        logger.debug(f"单文件与 git/ 源码一致性校验通过: {script_path}")
+        return
+    logger.warning(f"⚠️ {script_path} 不是由当前源码最新生成，{package_dir} 中的源码已变动。")
+    logger.warning("请执行 python git/generate_single_file.py --force 重新生成，"
+                   "避免单文件与源码行为不一致。")
 
 
 def stime():
