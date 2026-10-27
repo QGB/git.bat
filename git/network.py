@@ -347,7 +347,7 @@ def git_clone(git_bin: str, branch: str, remote_url: str, extra_args: list[str],
         logger.info("未发现 Git LFS 追踪规则，跳过大文件恢复。")
         return
     if not check_lfs_available(git_bin):
-        if not install_lfs() or not check_lfs_available(git_bin):
+        if not install_lfs(git_bin, retry_count=retry_count) or not check_lfs_available(git_bin):
             logger.error("克隆 LFS 仓库需要 Git LFS，但自动安装失败。")
             sys.exit(1)
     logger.info(f"===== 开始恢复 Git LFS 大文件: {destination} =====")

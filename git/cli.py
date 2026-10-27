@@ -171,7 +171,7 @@ def main():
         logger.info(f"扫描到 {len(large_files)} 个本地大文件")
         if has_large:
             if not check_lfs_available(git_exe):
-                if not install_lfs():
+                if not install_lfs(git_exe, retry_count=args.retry):
                     sys.exit(1)
                 if not check_lfs_available(git_exe):
                     logger.critical("Git LFS 安装后仍不可用")

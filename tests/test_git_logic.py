@@ -1,10 +1,12 @@
 import importlib.util
+import io
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -16,6 +18,48 @@ MODULE_PATH = Path(__file__).resolve().parents[1] / "git_logic.py"
 SPEC = importlib.util.spec_from_file_location("git_logic", MODULE_PATH)
 git_logic = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(git_logic)
+
+
+class WindowsLfsInstallTests(unittest.TestCase):
+    def test_install_lfs_windows_downloads_and_places_binary(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cmd_dir = Path(temp_dir) / "cmd"
+            cmd_dir.mkdir()
+            git_exe = cmd_dir / "git.exe"
+            git_exe.write_bytes(b"")
+
+            buffer = io.BytesIO()
+            with zipfile.ZipFile(buffer, "w") as bundle:
+                bundle.writestr("git-lfs-3.5.0/git-lfs.exe", b"lfs-binary")
+            payload = buffer.getvalue()
+
+            class FakeResponse:
+                status = 200
+                headers = {"Content-Length": str(len(payload)), "Server": "test"}
+
+                def __init__(self):
+                    self._stream = io.BytesIO(payload)
+
+                def geturl(self):
+                    return "https://example.invalid/git-lfs.zip"
+
+                def read(self, size=-1):
+                    return self._stream.read(size)
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *exc):
+                    return False
+
+            with patch.object(git_logic.platform, "system", return_value="Windows"), \
+                    patch.object(git_logic, "urlopen", return_value=FakeResponse()) as urlopen:
+                self.assertTrue(git_logic.install_lfs(str(git_exe), retry_count=2))
+
+            installed = cmd_dir / "git-lfs.exe"
+            self.assertTrue(installed.is_file())
+            self.assertEqual(installed.read_bytes(), b"lfs-binary")
+            self.assertIn("mirror.ghproxy.com", urlopen.call_args.args[0].full_url)
 
 
 class GitRepositoryTestCase(unittest.TestCase):

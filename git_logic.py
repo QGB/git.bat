@@ -286,11 +286,57 @@ def run_shell(git_bin: str, args: list[str], realtime: bool = False, extra_env: 
     except Exception as e:
         logger.critical(f"执行异常: {repr(e)}")
         raise
+import zipfile
+from urllib.request import Request, urlopen
+
+
+GIT_LFS_WINDOWS_URL = ("https://mirror.ghproxy.com/https://github.com/git-lfs/git-lfs/"
+                       "releases/latest/download/git-lfs-windows-amd64.zip")
+GIT_LFS_WINDOWS_ARCHIVE = "git-lfs-windows-amd64.zip"
+
+
 def check_lfs_available(git_bin: str) -> bool:
     return run_shell(git_bin, ["lfs", "version"], realtime=False).returncode == 0
 
 
-def install_lfs() -> bool:
+def download_file(url: str, dest: Path, retry_count: int = 3, retry_seconds: int = 5,
+                  is_debug: bool = False) -> bool:
+    """带重试与进度显示地下载文件，复用统一的重试次数；失败返回 False。"""
+    for attempt in range(1, retry_count + 1):
+        logger.info(f"===== 下载 {redact_url(url)} (尝试 {attempt}/{retry_count}) 间隔 {retry_seconds}s =====")
+        try:
+            request = Request(url, headers={"User-Agent": "git.bat"})
+            with urlopen(request, timeout=30) as response:
+                total = int(response.headers.get("Content-Length") or 0)
+                logger.info(f"[连接详情] 状态码 {response.status} | 服务器 {response.headers.get('Server', '')} "
+                            f"| 大小 {total} 字节 | 地址 {redact_url(response.geturl())}")
+                if is_debug:
+                    for key, value in response.headers.items():
+                        logger.debug(f"[响应头] {key}: {value}")
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                received = 0
+                with open(dest, "wb") as handle:
+                    while True:
+                        chunk = response.read(1024 * 256)
+                        if not chunk:
+                            break
+                        handle.write(chunk)
+                        received += len(chunk)
+                        if total:
+                            sys.stdout.write(f"\r下载进度: {received * 100 // total}% ({received}/{total} 字节)")
+                        else:
+                            sys.stdout.write(f"\r下载进度: {received} 字节")
+                        sys.stdout.flush()
+                sys.stdout.write("\n")
+            return True
+        except Exception as exc:
+            logger.warning(f"下载失败: {exc!r}")
+            if attempt < retry_count:
+                time.sleep(retry_seconds)
+    return False
+
+
+def install_lfs(git_bin: str, retry_count: int = 3, retry_seconds: int = 5, is_debug: bool = False) -> bool:
     system = platform.system()
     logger.info("检测到大文件，但未找到 Git LFS，尝试自动安装...")
     if system == "Linux":
@@ -311,7 +357,37 @@ def install_lfs() -> bool:
             return True
         except subprocess.CalledProcessError:
             return False
+    elif system == "Windows":
+        return install_lfs_windows(git_bin, retry_count, retry_seconds, is_debug)
     return False
+
+
+def install_lfs_windows(git_bin: str, retry_count: int = 3, retry_seconds: int = 5,
+                        is_debug: bool = False) -> bool:
+    """下载 git-lfs 压缩包并安装到 git.exe 同目录（run_shell 已把该目录加入 PATH）。"""
+    git_bin_dir = Path(git_bin).resolve().parent
+    target = git_bin_dir / "git-lfs.exe"
+    if target.is_file():
+        return True
+    install_dir = git_bin_dir / "git-lfs-install"
+    archive = install_dir / GIT_LFS_WINDOWS_ARCHIVE
+    if not download_file(GIT_LFS_WINDOWS_URL, archive, retry_count, retry_seconds, is_debug):
+        logger.error("git-lfs 下载失败，无法自动安装。")
+        return False
+    extract_dir = install_dir / "extracted"
+    try:
+        with zipfile.ZipFile(archive) as bundle:
+            bundle.extractall(extract_dir)
+    except (OSError, zipfile.BadZipFile) as exc:
+        logger.error(f"git-lfs 解压失败: {exc!r}")
+        return False
+    executable = next(iter(sorted(extract_dir.rglob("git-lfs.exe"))), None)
+    if executable is None:
+        logger.error("git-lfs 压缩包中未找到 git-lfs.exe。")
+        return False
+    shutil.copy2(executable, target)
+    logger.info(f"✅ git-lfs 已安装到: {target}")
+    return True
 
 
 def init_lfs(git_bin: str, repo_root: Path = None) -> bool:
@@ -936,7 +1012,7 @@ def git_clone(git_bin: str, branch: str, remote_url: str, extra_args: list[str],
         logger.info("未发现 Git LFS 追踪规则，跳过大文件恢复。")
         return
     if not check_lfs_available(git_bin):
-        if not install_lfs() or not check_lfs_available(git_bin):
+        if not install_lfs(git_bin, retry_count=retry_count) or not check_lfs_available(git_bin):
             logger.error("克隆 LFS 仓库需要 Git LFS，但自动安装失败。")
             sys.exit(1)
     logger.info(f"===== 开始恢复 Git LFS 大文件: {destination} =====")
@@ -1523,7 +1599,7 @@ def main():
         logger.info(f"扫描到 {len(large_files)} 个本地大文件")
         if has_large:
             if not check_lfs_available(git_exe):
-                if not install_lfs():
+                if not install_lfs(git_exe, retry_count=args.retry):
                     sys.exit(1)
                 if not check_lfs_available(git_exe):
                     logger.critical("Git LFS 安装后仍不可用")
@@ -1552,7 +1628,7 @@ def main():
     except KeyboardInterrupt:
         logger.warning("\n[CANCEL] 用户手动终止。")
         sys.exit(130)
-GENERATED_SOURCE_STAMP = "4bee5b7965a40f69452b347b22e3332a9906c429ace413a808f2c9c954b36e69"
+GENERATED_SOURCE_STAMP = "dae824d4584d0410792dc310a17c01c38c9f40ce12fe742c928bf207aa7fb2b8"
 GENERATED_SOURCE_FILES = ('shared.py', 'core.py', 'lfs.py', 'network.py', 'identity.py', 'commit.py', 'history.py', 'cli.py', 'generate_single_file.py')
 if __name__ == "__main__":
     main()
