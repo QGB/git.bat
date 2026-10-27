@@ -59,7 +59,7 @@ class WindowsLfsInstallTests(unittest.TestCase):
             installed = cmd_dir / "git-lfs.exe"
             self.assertTrue(installed.is_file())
             self.assertEqual(installed.read_bytes(), b"lfs-binary")
-            self.assertIn("mirror.ghproxy.com", urlopen.call_args.args[0].full_url)
+            self.assertIn("ghfast.top", urlopen.call_args.args[0].full_url)
 
 
 class GitRepositoryTestCase(unittest.TestCase):

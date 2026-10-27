@@ -4,8 +4,8 @@ from urllib.request import Request, urlopen
 from .shared import Path, logging, os, platform, shutil, subprocess, sys, time, urlparse, urlunparse
 from .core import logger, redact_url, run_shell
 
-GIT_LFS_WINDOWS_URL = ("https://mirror.ghproxy.com/https://github.com/git-lfs/git-lfs/"
-                       "releases/latest/download/git-lfs-windows-amd64.zip")
+GIT_LFS_WINDOWS_URL = ("https://ghfast.top/https://github.com/git-lfs/git-lfs/releases/"
+                       "download/v3.7.0/git-lfs-windows-amd64-v3.7.0.zip")
 GIT_LFS_WINDOWS_ARCHIVE = "git-lfs-windows-amd64.zip"
 
 

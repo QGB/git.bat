@@ -290,8 +290,8 @@ import zipfile
 from urllib.request import Request, urlopen
 
 
-GIT_LFS_WINDOWS_URL = ("https://mirror.ghproxy.com/https://github.com/git-lfs/git-lfs/"
-                       "releases/latest/download/git-lfs-windows-amd64.zip")
+GIT_LFS_WINDOWS_URL = ("https://ghfast.top/https://github.com/git-lfs/git-lfs/releases/"
+                       "download/v3.7.0/git-lfs-windows-amd64-v3.7.0.zip")
 GIT_LFS_WINDOWS_ARCHIVE = "git-lfs-windows-amd64.zip"
 
 
@@ -1628,7 +1628,7 @@ def main():
     except KeyboardInterrupt:
         logger.warning("\n[CANCEL] 用户手动终止。")
         sys.exit(130)
-GENERATED_SOURCE_STAMP = "dae824d4584d0410792dc310a17c01c38c9f40ce12fe742c928bf207aa7fb2b8"
+GENERATED_SOURCE_STAMP = "25e3d261d072ae598856ec330532041a06a0c9d28f653e277077b8ed264ecba1"
 GENERATED_SOURCE_FILES = ('shared.py', 'core.py', 'lfs.py', 'network.py', 'identity.py', 'commit.py', 'history.py', 'cli.py', 'generate_single_file.py')
 if __name__ == "__main__":
     main()
