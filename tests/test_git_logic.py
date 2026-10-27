@@ -1,5 +1,6 @@
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -7,6 +8,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+
+# 优先使用 GIT 环境变量；Windows 上显式查找 git.exe，避免误选本仓库的 git.bat 包装脚本。
+GIT = os.environ.get("GIT") or shutil.which("git.exe" if os.name == "nt" else "git")
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "git_logic.py"
 SPEC = importlib.util.spec_from_file_location("git_logic", MODULE_PATH)
@@ -16,9 +20,11 @@ SPEC.loader.exec_module(git_logic)
 
 class GitRepositoryTestCase(unittest.TestCase):
     def setUp(self):
+        if not GIT:
+            self.skipTest("未找到 git 可执行文件：请将 git 加入 PATH 或设置 GIT 环境变量")
         self.temp_dir = tempfile.TemporaryDirectory()
         self.repo = Path(self.temp_dir.name)
-        self.git = "git"
+        self.git = GIT
         self.run_git("init", "-q")
         self.run_git("config", "user.name", "Test User")
         self.run_git("config", "user.email", "test@example.invalid")
@@ -202,12 +208,14 @@ class PureFunctionTests(unittest.TestCase):
         self.assertEqual(parser.parse_args([]).mode, "push")
 
     def test_set_remote_uses_explicit_repository_path(self):
+        if not GIT:
+            self.skipTest("未找到 git 可执行文件：请将 git 加入 PATH 或设置 GIT 环境变量")
         with tempfile.TemporaryDirectory() as temp_dir:
             target = Path(temp_dir)
-            subprocess.run(["git", "init", "-q"], cwd=target, check=True)
-            git_logic.set_remote("git", "https://example.invalid/target.git", target)
+            subprocess.run([GIT, "init", "-q"], cwd=target, check=True)
+            git_logic.set_remote(GIT, "https://example.invalid/target.git", target)
             result = subprocess.run(
-                ["git", "config", "--get", "remote.origin.url"],
+                [GIT, "config", "--get", "remote.origin.url"],
                 cwd=target, capture_output=True, text=True, check=True,
             )
             self.assertEqual(result.stdout.strip(), "https://example.invalid/target.git")
@@ -245,7 +253,10 @@ class ScanAndAttributeTests(unittest.TestCase):
             nested.mkdir()
             (nested / ".git").mkdir()
             (nested / "large.bin").write_bytes(b"x" * 20)
-            os.symlink(root / "real.bin", root / "linked.bin")
+            try:
+                os.symlink(root / "real.bin", root / "linked.bin")
+            except (OSError, NotImplementedError):
+                self.skipTest("当前平台不支持创建符号链接（Windows 需开发者模式或管理员权限）")
             self.assertEqual(git_logic.scan_large_files(root, 10), {"real.bin"})
 
     def test_clean_and_apply_lfs_removes_stale_nested_and_symlink_rules(self):
@@ -253,7 +264,10 @@ class ScanAndAttributeTests(unittest.TestCase):
             root = Path(temp_dir)
             (root / "nested" / ".git").mkdir(parents=True)
             (root / "link-target").write_bytes(b"target")
-            os.symlink(root / "link-target", root / "link.bin")
+            try:
+                os.symlink(root / "link-target", root / "link.bin")
+            except (OSError, NotImplementedError):
+                self.skipTest("当前平台不支持创建符号链接（Windows 需开发者模式或管理员权限）")
             (root / ".gitattributes").write_text(
                 "nested/old.bin filter=lfs diff=lfs merge=lfs -text\n"
                 "link.bin filter=lfs diff=lfs merge=lfs -text\n"

@@ -378,4 +378,6 @@ def git_pull(git_bin: str, branch: str, extra_args: list[str], remote_url: str =
     lfs_env = {}
     if logger.getEffectiveLevel() <= logging.DEBUG:
         lfs_env.update({"GIT_CURL_VERBOSE": "1", "GIT_TRACE": "1", "GIT_TRANSFER_TRACE": "1"})
-    run_shell(git_bin, ["lfs", "pull"], realtime=True, extra_env=lfs_env, cwd=repo_root)
+    if run_shell(git_bin, ["lfs", "pull"], realtime=True, extra_env=lfs_env, cwd=repo_root).returncode != 0:
+        logger.error("git lfs pull 执行失败：当前 git 未安装 Git LFS 或拉取 LFS 对象出错。"
+                     "代码本身已成功拉取，如不依赖 LFS 内容可忽略此项。")

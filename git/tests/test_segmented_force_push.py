@@ -1,3 +1,5 @@
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -7,10 +9,13 @@ from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[2] / "git_logic.py"
 
+# 优先使用 GIT 环境变量；Windows 上显式查找 git.exe，避免误选本仓库的 git.bat 包装脚本。
+GIT = os.environ.get("GIT") or shutil.which("git.exe" if os.name == "nt" else "git")
+
 
 def run_git(cwd, *args):
     return subprocess.run(
-        ["git", *map(str, args)],
+        [GIT, *map(str, args)],
         cwd=cwd,
         check=True,
         capture_output=True,
@@ -19,6 +24,10 @@ def run_git(cwd, *args):
 
 
 class SegmentedForcePushTests(unittest.TestCase):
+    def setUp(self):
+        if not GIT:
+            self.skipTest("未找到 git 可执行文件：请将 git 加入 PATH 或设置 GIT 环境变量")
+
     def test_force_option_pushes_each_chunk_when_remote_has_diverged(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
